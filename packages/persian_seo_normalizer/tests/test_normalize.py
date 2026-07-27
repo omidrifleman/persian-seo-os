@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from persian_seo_normalizer import (  # noqa: E402
+from persian_seo_normalizer import (
     analyze_form,
     audit_rtl_text,
     display_form,

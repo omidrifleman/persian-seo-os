@@ -5,8 +5,9 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Protocol
+from typing import Protocol
 
 
 class ProviderError(RuntimeError):
@@ -20,7 +21,7 @@ class BudgetExceeded(RuntimeError):
 class Provider(Protocol):
     name: str
 
-    def complete(self, prompt: str, *, model: str, max_tokens: int) -> "Completion": ...
+    def complete(self, prompt: str, *, model: str, max_tokens: int) -> Completion: ...
 
 
 @dataclass

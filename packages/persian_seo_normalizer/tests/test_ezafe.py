@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Unit + env-gated integration tests for ezafe detection."""
 from __future__ import annotations
 

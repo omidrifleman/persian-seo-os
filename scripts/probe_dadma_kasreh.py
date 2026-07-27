@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """One-shot probe for DadmaTools kasreh — writes progress to stdout."""
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ CACHE.mkdir(parents=True, exist_ok=True)
 def main() -> int:
     t0 = time.time()
     print(f"[{time.time() - t0:.1f}s] import language", flush=True)
-    import dadmatools.pipeline.language as language
+    from dadmatools.pipeline import language
 
     print(f"[{time.time() - t0:.1f}s] create Pipeline(tok,kasreh) cache={CACHE}", flush=True)
     nlp = language.Pipeline("tok,kasreh", cache_dir=str(CACHE), gpu=False)

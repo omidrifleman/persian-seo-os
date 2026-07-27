@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Prefetch DadmaTools models with retries, then run a kasreh smoke probe."""
 from __future__ import annotations
 
@@ -28,7 +27,7 @@ def retry(label: str, fn, attempts: int = 6):
 
 def prefetch() -> None:
     from huggingface_hub import hf_hub_download
-    from transformers import XLMRobertaTokenizer, XLMRobertaModel
+    from transformers import XLMRobertaModel, XLMRobertaTokenizer
 
     PERSIAN.mkdir(parents=True, exist_ok=True)
     files = [
@@ -58,7 +57,7 @@ def prefetch() -> None:
 
 
 def probe() -> None:
-    import dadmatools.pipeline.language as language
+    from dadmatools.pipeline import language
 
     out_path = ROOT / "cache" / "kasreh_probe_result.jsonl"
     print("create Pipeline...", flush=True)

@@ -233,7 +233,7 @@ class DadmaEzafeBackend:
             return DadmaEzafeBackend._pipeline
 
         try:
-            import dadmatools.pipeline.language as language  # noqa: WPS433
+            from dadmatools.pipeline import language  # noqa: WPS433
         except ImportError as exc:
             raise EzafeBackendUnavailable(
                 "DadmaTools is required for ezafe detection. "
@@ -243,11 +243,8 @@ class DadmaEzafeBackend:
 
         # Marker absence = unverified/incomplete. We still attempt one load;
         # only a successful Pipeline() writes the marker (no file-size guesses).
-        try:
-            pipeline = language.Pipeline("tok,kasreh", cache_dir=cache, gpu=self._gpu)
-        except Exception:
-            # Leave marker absent so the cache stays marked incomplete.
-            raise
+        # On failure leave marker absent so the cache stays marked incomplete.
+        pipeline = language.Pipeline("tok,kasreh", cache_dir=cache, gpu=self._gpu)
 
         write_dadma_cache_marker(cache)
         DadmaEzafeBackend._pipeline = pipeline
