@@ -13,6 +13,7 @@ from persian_seo_normalizer import (  # noqa: E402
     detect_keyword_cannibalization,
     keyword_fingerprint,
 )
+from persian_seo_normalizer import cannibalization as cannibalization_mod  # noqa: E402
 from persian_seo_normalizer.cannibalization import SIGNIFICANT_WORD_COUNT  # noqa: E402
 
 
@@ -43,6 +44,8 @@ def _page(
 
 
 class TestCannibalization(unittest.TestCase):
+    def setUp(self) -> None:
+        cannibalization_mod._logged_unknown_roles.clear()
     def test_buy_phone_variants_same_cluster(self):
         pages = [
             _page("a", "خرید گوشی", title="خرید گوشی ارزان", h1="خرید گوشی"),
