@@ -17,13 +17,18 @@ _SEO_STOPWORDS = {
 }
 
 
+def keyword_content_tokens(text: str) -> list[str]:
+    """توکن‌های معنایی کیورد پس از analyze_form و حذف استاپ‌وردهای سئو."""
+    return [t for t in analyze_form(text).split() if t not in _SEO_STOPWORDS]
+
+
 def keyword_fingerprint(text: str, *, order_sensitive: bool = False) -> str:
     """اثر انگشت کلیدواژه.
 
     order_sensitive=False یعنی «قیمت لپ تاپ» و «لپ تاپ قیمت» یک اثر انگشت دارند.
     برای intentهای ناوبری/برند بهتر است True بگذاری.
     """
-    tokens = [t for t in analyze_form(text).split() if t not in _SEO_STOPWORDS]
+    tokens = keyword_content_tokens(text)
     if not order_sensitive:
         tokens = sorted(tokens)
     joined = " ".join(tokens)

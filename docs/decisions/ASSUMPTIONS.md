@@ -28,3 +28,11 @@ CMS=وردپرس فقط (ADR-0004)، ارائه=سرویس محصول‌سازی
 نتیجهٔ چک آدیت ezafe سه‌حالتی است: pass / ایراد (`skipped=False`) /
 نامعلوم (`skipped=True` + `skip_reason`). یافتهٔ skipped نباید در quality gate
 سبز شود. جزئیات: docstringهای `RtlFinding` و `audit_ezafe_kasreh` و ADR-0002.
+
+## ASSUMPTION-006 — آستانهٔ significant_word_count=500 حدسی است
+**برچسب:** `NEEDS-CONFIRMATION`
+پیش‌فرض `significant_word_count=500` در `detect_keyword_cannibalization` از دادهٔ
+فارسی یا بنچمارک سایت نیامده؛ حدس مهندسی است و برای صفحهٔ محصول (اغلب کوتاه‌تر)
+احتمالاً نامناسب است. پارامتر تابع است تا per-site عوض شود.
+**شرط بسته‌شدن:** یا با نمونهٔ واقعی مشتری (توزیع word_count صفحات هم‌نقش) کالیبره
+شود، یا آستانهٔ per-`page_role` در ADR جدا تعریف و با تست تأیید شود.
