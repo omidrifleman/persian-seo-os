@@ -28,9 +28,10 @@ def _page(
     inbound_internal_links: int = 0,
     url: str | None = None,
 ) -> PageTarget:
+    default_url = "https://example.com/" + page_id
     return PageTarget(
         page_id=page_id,
-        url=url or f"https://example.com/{page_id}",
+        url=default_url if url is None else url,
         title=title or page_id,
         h1=h1 or title or page_id,
         target_keyword=keyword,
@@ -228,6 +229,56 @@ class TestCannibalization(unittest.TestCase):
         cluster = result.clusters[0]
         self.assertEqual(cluster.decided_by, "page_id_tiebreak")
         self.assertEqual(cluster.winner_page_id, "bbb")  # lexicographic max
+
+    def test_decided_by_not_tiebreak_when_lexicographic_win_across_rivals(self):
+        """برنده در هر معیار جدا با یک رقیب مساوی است، ولی مجموعاً برنده — نه tiebreak."""
+        winner = _page(
+            "win",
+            "کیورد",
+            title="کیورد اینجا",
+            h1="متفرقه",
+            page_role="commercial",
+            inbound_internal_links=0,
+            word_count=0,
+        )
+        rival_title_tie = _page(
+            "a",
+            "کیورد",
+            title="کیورد هم",
+            h1="متفرقه",
+            page_role="other",
+            inbound_internal_links=10,
+            word_count=0,
+        )
+        rival_role_tie = _page(
+            "b",
+            "کیورد",
+            title="بدون",
+            h1="بدون",
+            page_role="commercial",
+            inbound_internal_links=0,
+            word_count=100,
+        )
+        result = detect_keyword_cannibalization([winner, rival_title_tie, rival_role_tie])
+        cluster = result.clusters[0]
+        self.assertEqual(cluster.winner_page_id, "win")
+        self.assertNotEqual(cluster.decided_by, "page_id_tiebreak")
+        self.assertEqual(cluster.decided_by, "page_role")
+
+    def test_unknown_page_role_logs_and_reason_code(self):
+        known = _page("k", "کیورد", title="کیورد", h1="کیورد", page_role="pillar", priority=1)
+        unknown = _page("u", "کیورد", title="x", h1="y", page_role="landing-hero", word_count=10)
+        with self.assertLogs("persian_seo_normalizer.cannibalization", level="WARNING") as cm:
+            result = detect_keyword_cannibalization([known, unknown])
+        self.assertTrue(any("Unknown page_role" in line for line in cm.output))
+        loser = next(p for p in result.clusters[0].pages if p.page_id == "u")
+        self.assertIn("unknown_page_role", loser.reason_codes)
+
+    def test_page_helper_url_has_no_brace_wrapper(self):
+        page = _page("slug-1", "کلمه")
+        self.assertEqual(page.url, "https://example.com/slug-1")
+        self.assertFalse(page.url.startswith("{"))
+        self.assertFalse(page.url.endswith("}"))
 
     def test_different_roles_get_differentiate(self):
         commercial = _page(

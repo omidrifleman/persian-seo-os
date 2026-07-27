@@ -6,10 +6,13 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from .fingerprint import keyword_content_tokens, keyword_fingerprint
 from .normalize import analyze_form
+
+_LOG = logging.getLogger(__name__)
 
 SIGNIFICANT_WORD_COUNT = 500
 
@@ -20,7 +23,17 @@ _ROLE_RANK = {
     "other": 0,
 }
 
+_CRITERION_NAMES = (
+    "priority",
+    "title_h1_match",
+    "page_role",
+    "internal_links",
+    "word_count",
+    "page_id_tiebreak",
+)
+
 _ACTIONS = frozenset({"keep", "consolidate_into", "retarget", "differentiate"})
+_logged_unknown_roles: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -75,9 +88,24 @@ class CannibalizationResult:
     skipped_pages: tuple[SkippedPage, ...]
 
 
+def _is_unknown_role(role: str) -> bool:
+    key = (role or "").strip().lower()
+    if not key:
+        return False
+    return key not in _ROLE_RANK
+
+
 def _normalize_role(role: str) -> str:
-    key = (role or "other").strip().lower()
-    return key if key in _ROLE_RANK else "other"
+    raw = (role or "").strip()
+    key = raw.lower()
+    if not key:
+        return "other"
+    if key in _ROLE_RANK:
+        return key
+    if key not in _logged_unknown_roles:
+        _logged_unknown_roles.add(key)
+        _LOG.warning("Unknown page_role %r treated as 'other'.", raw)
+    return "other"
 
 
 def _role_rank(role: str) -> int:
@@ -131,31 +159,22 @@ def _pick_signal_winner(pages: list[PageTarget]) -> PageTarget:
 
 
 def _decided_by(winner: PageTarget, pages: list[PageTarget]) -> str:
+    """اولین معیاری که کلید کامل برنده را از نفر دوم جدا می‌کند."""
     others = [p for p in pages if p.page_id != winner.page_id]
-    checks: list[tuple[str, object]] = [
-        ("priority", _priority_key(winner)),
-        ("title_h1_match", _title_h1_score(winner)),
-        ("page_role", _role_rank(winner.page_role)),
-        ("internal_links", winner.inbound_internal_links),
-        ("word_count", winner.word_count),
-        ("page_id_tiebreak", winner.page_id),
-    ]
-    other_fns = [
-        _priority_key,
-        _title_h1_score,
-        _role_rank_page,
-        lambda p: p.inbound_internal_links,
-        lambda p: p.word_count,
-        lambda p: p.page_id,
-    ]
-    for (name, wval), fn in zip(checks, other_fns, strict=True):
-        if all(wval > fn(o) for o in others):  # type: ignore[operator]
+    runner_up = max(others, key=_full_key)
+    for name, w_val, r_val in zip(
+        _CRITERION_NAMES, _full_key(winner), _full_key(runner_up), strict=True
+    ):
+        if w_val != r_val:
             return name
     return "page_id_tiebreak"
 
 
-def _role_rank_page(page: PageTarget) -> int:
-    return _role_rank(page.page_role)
+def _with_unknown_role_code(page: PageTarget, codes: tuple[str, ...]) -> tuple[str, ...]:
+    if _is_unknown_role(page.page_role):
+        _normalize_role(page.page_role)  # ensure warning once
+        return codes + ("unknown_page_role",)
+    return codes
 
 
 def _loser_action(
@@ -278,7 +297,9 @@ def detect_keyword_cannibalization(
                         page_id=page.page_id,
                         url=page.url,
                         action="keep",
-                        reason_codes=(f"winner_by_{decided}",),
+                        reason_codes=_with_unknown_role_code(
+                            page, (f"winner_by_{decided}",)
+                        ),
                         reason_fa=f"برنده بر اساس معیار {decided}.",
                     )
                 )
@@ -295,7 +316,7 @@ def detect_keyword_cannibalization(
                     url=page.url,
                     action=action,
                     consolidate_target_id=target,
-                    reason_codes=codes,
+                    reason_codes=_with_unknown_role_code(page, codes),
                     reason_fa=_action_reason_fa(
                         action,
                         winner,
