@@ -14,10 +14,23 @@ _GLUED_MI = re.compile(r"(?<![\w\u0600-\u06ff])(\u0646?\u0645\u06cc)(?![\u200c ]
 
 @dataclass
 class RtlFinding:
+    """یافتهٔ آدیت RTL / فارسی.
+
+    در گِیت کیفیت سه حالت جداست — skipped هرگز pass نیست:
+      - pass: چک اجرا شد و ایرادی نبود (لیست خالیِ یافته‌های غیر-skip)
+      - ایراد: یافته با skipped=False
+      - نامعلوم: یافته با skipped=True (+ skip_reason) — مصرف‌کننده نباید
+        آن را پاس بشمارد؛ جای مصرف گِیت هنوز نوشته نشده.
+    """
+
     code: str
     severity: str  # critical | high | medium | low
     message: str
     sample: str = ""
+    raw_label: str | None = None
+    confidence: float | None = None
+    skipped: bool = False
+    skip_reason: str | None = None
 
 
 def audit_rtl_text(text: str, *, field: str = "body") -> list[RtlFinding]:

@@ -155,6 +155,57 @@ class TestEzafeApi(unittest.TestCase):
         self.assertEqual(raw, "X-weird")
         self.assertTrue(any("Unknown kasreh label" in line for line in cm.output))
 
+    def test_cache_ready_requires_marker_not_filesize(self):
+        import tempfile
+        from pathlib import Path
+
+        from persian_seo_normalizer.ezafe import (
+            CACHE_READY_MARKER,
+            EzafeCacheError,
+            assert_dadma_cache_ready,
+            write_dadma_cache_marker,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Directory alone is not enough — no size heuristics.
+            with self.assertRaises(EzafeCacheError) as ctx:
+                assert_dadma_cache_ready(tmp)
+            self.assertIn(CACHE_READY_MARKER, str(ctx.exception))
+
+            write_dadma_cache_marker(tmp)
+            assert_dadma_cache_ready(tmp)
+            self.assertTrue((Path(tmp) / CACHE_READY_MARKER).is_file())
+
+    def test_audit_ezafe_skips_with_reason_when_backend_missing(self):
+        from persian_seo_normalizer import EZAFE_AUDIT_CODE, audit_ezafe_kasreh
+
+        findings = audit_ezafe_kasreh("کتاب علی", backend=None)
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].skipped)
+        self.assertEqual(findings[0].code, EZAFE_AUDIT_CODE)
+        self.assertEqual(findings[0].severity, "low")
+        self.assertTrue(findings[0].skip_reason)
+
+    def test_audit_ezafe_emits_findings_with_raw_label(self):
+        from persian_seo_normalizer import EZAFE_AUDIT_CODE, audit_ezafe_kasreh
+
+        @dataclass
+        class _FakeBackend:
+            def detect(self, text: str):
+                return [
+                    _mark(0, "کتاب", "S-kasreh"),
+                    _mark(1, "علی", "O"),
+                ]
+
+        findings = audit_ezafe_kasreh("کتاب علی", backend=_FakeBackend())
+        self.assertEqual(len(findings), 1)
+        self.assertFalse(findings[0].skipped)
+        self.assertEqual(findings[0].code, EZAFE_AUDIT_CODE)
+        self.assertEqual(findings[0].severity, "low")
+        self.assertEqual(findings[0].sample, "کتاب")
+        self.assertEqual(findings[0].raw_label, "S-kasreh")
+        self.assertIsNone(findings[0].confidence)
+
 
 @unittest.skipUnless(
     os.getenv("PERSIAN_SEO_NLP_TESTS") == "1",

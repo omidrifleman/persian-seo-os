@@ -8,7 +8,14 @@
 from .normalize import analyze_form, display_form, unify_characters, to_ascii_digits, to_persian_digits
 from .fingerprint import keyword_fingerprint, same_keyword
 from .rtl_qa import audit_rtl_text, RtlFinding
-from .ezafe import detect_ezafe, EzafeMark, EzafeBackendUnavailable
+from .ezafe import (
+    detect_ezafe,
+    audit_ezafe_kasreh,
+    EzafeMark,
+    EzafeBackendUnavailable,
+    EzafeCacheError,
+    EZAFE_AUDIT_CODE,
+)
 
 __all__ = [
     "analyze_form",
@@ -21,7 +28,10 @@ __all__ = [
     "audit_rtl_text",
     "RtlFinding",
     "detect_ezafe",
+    "audit_ezafe_kasreh",
     "EzafeMark",
     "EzafeBackendUnavailable",
+    "EzafeCacheError",
+    "EZAFE_AUDIT_CODE",
 ]
 __version__ = "0.1.0"

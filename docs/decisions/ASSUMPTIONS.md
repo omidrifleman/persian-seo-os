@@ -22,3 +22,9 @@ CMS=وردپرس فقط (ADR-0004)، ارائه=سرویس محصول‌سازی
 **برچسب:** `NEEDS-CONFIRMATION` (برش جدا؛ الان دست نزن)
 نام ستون `volume` گمراه‌کننده است چون دادهٔ حجم جست‌وجوی فارسی تخمینی است.
 ثبت شد برای برش بعدی؛ در این نشست اسکیما عوض نمی‌شود.
+
+## ASSUMPTION-005 — skipped در گِیت کیفیت هرگز pass نیست
+**برچسب:** `CONFIRMED` (قرارداد؛ مصرف‌کننده هنوز نوشته نشده)
+نتیجهٔ چک آدیت ezafe سه‌حالتی است: pass / ایراد (`skipped=False`) /
+نامعلوم (`skipped=True` + `skip_reason`). یافتهٔ skipped نباید در quality gate
+سبز شود. جزئیات: docstringهای `RtlFinding` و `audit_ezafe_kasreh` و ADR-0002.

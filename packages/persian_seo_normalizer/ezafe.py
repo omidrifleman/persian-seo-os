@@ -1,7 +1,7 @@
 """تشخیص کسره اضافه (ezafe) — دامنه نزدیک به نمایش، جدا از analyze_form.
 
 خروجی span است؛ متن mutate نمی‌شود. وابستگی DadmaTools فقط با import تنبل
-داخل backend و فقط وقتی extras[nlp] نصب باشد.
+داخل backend. تشخیص ezafe سیگنال آدیت است، نه بخشی از display_form.
 """
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from .rtl_qa import RtlFinding
 
 _UNSET = object()
 _LOG = logging.getLogger(__name__)
@@ -20,21 +22,14 @@ _SCORE_ATTRS = ("kasreh_score", "kasreh_confidence", "score", "confidence")
 # runtime returned S-kasreh — so any non-O string is positive.
 _OUTSIDE_LABELS = {"", "o", "other", "none", "null", "_", "-", "0", "false", "no"}
 
-# Soft set for logging only (not for gating). Labels outside this (and not O)
-# are still positive, but logged once as unknown.
+# Soft set for logging only (not for gating).
 _OBSERVED_POSITIVE_LABELS = {"s-kasreh", "b-kasreh", "i-kasreh", "e-kasreh"}
 _logged_unknown_labels: set[str] = set()
 
-# (relative path under cache, minimum bytes) — incomplete downloads fail loud.
-_REQUIRED_CACHE_FILES: tuple[tuple[str, int], ...] = (
-    ("fa_tokenizer.pt", 600_000),
-    ("xlm-roberta-base/persian/persian.kasreh.mdl", 1_000_000),
-    ("xlm-roberta-base/persian/persian.kasreh-vocab.json", 10),
-    ("xlm-roberta-base/persian/persian.tokenizer.mdl", 1_000_000),
-    ("xlm-roberta-base/persian/persian.vocabs.json", 100),
-)
-
 CACHE_ENV = "PERSIAN_SEO_DADMA_CACHE"
+# Written only after a successful Pipeline() construction — not a size guess.
+CACHE_READY_MARKER = ".persian_seo_os_dadma_pipeline_ok"
+EZAFE_AUDIT_CODE = "fa.text.missing_ezafe_kasreh"
 
 
 @dataclass(frozen=True)
@@ -46,7 +41,7 @@ class EzafeMark:
       - None وقتی بک‌اند امتیاز نمی‌دهد (مثلاً DadmaTools با برچسب سخت)
       None را هرگز ۱.۰ تفسیر نکن — نبود امتیاز ≠ قطعیت.
       kasreh یک کلاسیفایر است و اشتباه می‌کند.
-    raw_label: برچسب خام بک‌اند (مثلاً \"S-kasreh\" / \"O\")؛ برای دیباگ و آستانه بعدی.
+    raw_label: برچسب خام بک‌اند (مثلاً \"S-kasreh\" / \"O\").
     """
 
     index: int
@@ -73,6 +68,19 @@ class EzafeBackend(Protocol):
     def detect(self, text: str) -> list[EzafeMark]: ...
 
 
+def dadma_cache_marker_path(cache_dir: str) -> Path:
+    return Path(cache_dir) / CACHE_READY_MARKER
+
+
+def write_dadma_cache_marker(cache_dir: str) -> Path:
+    """فقط پس از بارگذاری موفق Pipeline فراخوانی شود."""
+    root = Path(cache_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    path = dadma_cache_marker_path(cache_dir)
+    path.write_text("pipeline_ok\n", encoding="utf-8")
+    return path
+
+
 def resolve_dadma_cache_dir(explicit: str | None = None) -> str:
     """مسیر مطلق کش مدل‌ها — فقط از آرگومان صریح یا env، نه مسیر نسبی CWD."""
     if explicit:
@@ -88,7 +96,8 @@ def resolve_dadma_cache_dir(explicit: str | None = None) -> str:
         raise EzafeCacheError(
             f"Set {CACHE_ENV} to an absolute directory with prefetched DadmaTools "
             "models. Relative 'cache/dadmatools' is not used (breaks when CWD changes). "
-            "Offline: mount a prepared cache and point this env var at it."
+            "Offline: mount a prepared cache (including readiness marker) and point "
+            f"{CACHE_ENV} at it."
         )
     path = Path(env).expanduser()
     if not path.is_absolute():
@@ -99,27 +108,22 @@ def resolve_dadma_cache_dir(explicit: str | None = None) -> str:
 
 
 def assert_dadma_cache_ready(cache_dir: str) -> None:
-    """اگر فایل کلیدی نباشد یا کوتاه‌تر از حداقل باشد، بلند شکست بده."""
+    """کش معتبر = پوشه موجود + نشانگر بارگذاری موفق Pipeline.
+
+    حدس اندازه فایل نمی‌زنیم؛ دانلود ناقص نشانگر ندارد.
+    """
     root = Path(cache_dir)
     if not root.is_dir():
         raise EzafeCacheError(
             f"DadmaTools cache directory missing: {cache_dir}. "
             f"Prefetch models offline and set {CACHE_ENV}."
         )
-    problems: list[str] = []
-    for rel, min_size in _REQUIRED_CACHE_FILES:
-        path = root / rel
-        if not path.is_file():
-            problems.append(f"missing {rel}")
-            continue
-        size = path.stat().st_size
-        if size < min_size:
-            problems.append(f"incomplete {rel} ({size} < {min_size} bytes)")
-    if problems:
+    marker = dadma_cache_marker_path(cache_dir)
+    if not marker.is_file():
         raise EzafeCacheError(
-            "DadmaTools cache incomplete or corrupted: "
-            + "; ".join(problems)
-            + f". Re-prefetch or mount a known-good cache at {CACHE_ENV}. "
+            f"DadmaTools cache has no readiness marker ({CACHE_READY_MARKER}). "
+            "Treat as incomplete/corrupt. Load Pipeline once successfully to write "
+            f"the marker, or mount a cache that already includes it via {CACHE_ENV}. "
             "Dropbox/HF downloads from Iran are unreliable."
         )
 
@@ -139,7 +143,7 @@ def parse_kasreh_label(value: object) -> tuple[bool, str | None]:
     """برچسب خام → (has_ezafe, raw_label).
 
     قاعده: هر برچسبی که O (outside) نیست مثبت است.
-    فهرست مثبت‌ها بسته نیست؛ برچسب ناشناخته لاگ می‌شود ولی crash نمی‌کند.
+    فهرست مثبت‌ها بسته نیست؛ برچسب ناشناخته با logging.warning لاگ می‌شود.
     """
     raw = _normalize_label(value)
     if raw is None:
@@ -211,11 +215,7 @@ def _iter_doc_tokens(doc: object) -> list[object]:
 
 
 class DadmaEzafeBackend:
-    """Adapter روی DadmaTools pipeline `tok,kasreh` با import تنبل.
-
-    Pipeline یک‌بار ساخته و نگه داشته می‌شود (دانلود/بارگذاری مدل گران است).
-    کش فقط از مسیر مطلق ({CACHE_ENV} یا cache_dir صریح).
-    """
+    """Adapter روی DadmaTools pipeline `tok,kasreh` با import تنبل."""
 
     _pipeline: Any = None
     _pipeline_cache_dir: str | None = None
@@ -232,8 +232,6 @@ class DadmaEzafeBackend:
         ):
             return DadmaEzafeBackend._pipeline
 
-        assert_dadma_cache_ready(cache)
-
         try:
             import dadmatools.pipeline.language as language  # noqa: WPS433
         except ImportError as exc:
@@ -243,9 +241,16 @@ class DadmaEzafeBackend:
                 "(dadmatools[full]==2.3.6)."
             ) from exc
 
-        DadmaEzafeBackend._pipeline = language.Pipeline(
-            "tok,kasreh", cache_dir=cache, gpu=self._gpu
-        )
+        # Marker absence = unverified/incomplete. We still attempt one load;
+        # only a successful Pipeline() writes the marker (no file-size guesses).
+        try:
+            pipeline = language.Pipeline("tok,kasreh", cache_dir=cache, gpu=self._gpu)
+        except Exception:
+            # Leave marker absent so the cache stays marked incomplete.
+            raise
+
+        write_dadma_cache_marker(cache)
+        DadmaEzafeBackend._pipeline = pipeline
         DadmaEzafeBackend._pipeline_cache_dir = cache
         return DadmaEzafeBackend._pipeline
 
@@ -280,8 +285,7 @@ def detect_ezafe(
 ) -> list[EzafeMark]:
     """تشخیص مواضع کسره اضافه. متن را تغییر نمی‌دهد.
 
-    backend=None → خطای روشن (تست / غیرفعال‌سازی صریح).
-    بدون آرگومان → DadmaEzafeBackend (import تنبل؛ کش از PERSIAN_SEO_DADMA_CACHE).
+    بخشی از display_form نیست — فقط برای آدیت/استراتژی فراخوانی شود.
     """
     if not text or not str(text).strip():
         return []
@@ -296,3 +300,60 @@ def detect_ezafe(
         backend = DadmaEzafeBackend(gpu=False)
 
     return backend.detect(text)  # type: ignore[union-attr]
+
+
+def audit_ezafe_kasreh(
+    text: str,
+    *,
+    backend: EzafeBackend | None | object = _UNSET,
+    field: str = "body",
+) -> list[RtlFinding]:
+    """چک آدیت اختیاری کسره اضافه — فقط مسیر آدیت، نه display_form.
+
+    کد: fa.text.missing_ezafe_kasreh، شدت low.
+    اگر بک‌اند در دسترس نباشد: یک یافتهٔ skipped با دلیل روشن
+    (نه raise، نه لیست خالیِ خاموش).
+    یافته‌های واقعی raw_label و confidence را حمل می‌کنند.
+
+    قرارداد گِیت کیفیت (مصرف‌کننده هنوز نوشته نشده): سه حالت جدا —
+      pass = چک اجرا شد، ایرادی نیست؛
+      ایراد = RtlFinding با skipped=False؛
+      نامعلوم = RtlFinding با skipped=True.
+    skipped=True هرگز معادل pass نیست و نباید در quality gate سبز شود.
+    """
+    del field  # reserved for parity with audit_rtl_text callers
+    if not text or not str(text).strip():
+        return []
+
+    try:
+        marks = detect_ezafe(text, backend=backend)
+    except (EzafeBackendUnavailable, EzafeCacheError) as exc:
+        return [
+            RtlFinding(
+                code=EZAFE_AUDIT_CODE,
+                severity="low",
+                message="Ezafe/kasreh audit check skipped — backend or cache unavailable.",
+                skipped=True,
+                skip_reason=str(exc),
+            )
+        ]
+
+    findings: list[RtlFinding] = []
+    for mark in marks:
+        if not mark.has_ezafe:
+            continue
+        # Orthography usually omits kasreh; surface the invisible ezafe link for review.
+        findings.append(
+            RtlFinding(
+                code=EZAFE_AUDIT_CODE,
+                severity="low",
+                message=(
+                    "رابطهٔ کسره اضافه در متن تشخیص داده شد ولی در خط نوشته نشده؛ "
+                    "معنای عبارت کلیدی را عوض می‌کند — بازبینی انسانی."
+                ),
+                sample=mark.token,
+                raw_label=mark.raw_label,
+                confidence=mark.confidence,
+            )
+        )
+    return findings
