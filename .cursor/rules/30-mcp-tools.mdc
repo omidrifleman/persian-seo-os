@@ -1,0 +1,14 @@
+---
+description: قرارداد نوشتن MCP tool.
+globs: ["services/mcp_server/**"]
+alwaysApply: false
+---
+
+# قرارداد MCP tool
+
+- نام‌گذاری: `<domain>.<verb>` مثل `audit.run`, `keywords.cluster`, `publish.dry_run`.
+- ورودی و خروجی هر دو مدل Pydantic. بدون `dict` بی‌شکل.
+- هر tool باید `annotations` درست بدهد: `readOnlyHint`, `destructiveHint`, `idempotent`.
+- toolهای مخرب باید `approval_id` را در ورودی الزامی داشته باشند.
+- هیچ tool‌ای نباید بیش از ۳۰ ثانیه blocking باشد؛ کار طولانی → job id + polling.
+- خطاها ساخت‌یافته برگردند (کد خطا + پیام فارسی قابل نمایش به مشتری).

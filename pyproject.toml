@@ -1,0 +1,17 @@
+[project]
+name = "persian-seo-os"
+version = "0.1.0"
+description = "AI SEO & content marketing platform for the Persian web, human-in-the-loop by design"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+nlp = ["dadmatools", "hazm"]
+crawl = ["scrapy", "playwright", "advertools"]
+api = ["fastapi", "uvicorn", "pydantic>=2", "sqlalchemy", "alembic", "psycopg[binary]"]
+workers = ["celery[redis]"]
+mcp = ["mcp"]
+dev = ["ruff", "pytest"]
+
+[tool.ruff]
+line-length = 100

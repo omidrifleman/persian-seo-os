@@ -1,0 +1,35 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: seo
+      POSTGRES_PASSWORD: seo
+      POSTGRES_DB: seo_os
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+
+  # وردپرس لوکال فقط برای تست انتشار و rollback — هرگز به سایت مشتری وصل نشو
+  wordpress:
+    image: wordpress:latest
+    depends_on: [wpdb]
+    environment:
+      WORDPRESS_DB_HOST: wpdb
+      WORDPRESS_DB_USER: wp
+      WORDPRESS_DB_PASSWORD: wp
+      WORDPRESS_DB_NAME: wp
+    ports: ["8080:80"]
+
+  wpdb:
+    image: mariadb:11
+    environment:
+      MARIADB_USER: wp
+      MARIADB_PASSWORD: wp
+      MARIADB_DATABASE: wp
+      MARIADB_ROOT_PASSWORD: root
+
+volumes:
+  pgdata:

@@ -1,0 +1,20 @@
+{
+  "$comment": [
+    "این فایل عمداً .example است و تا زمانی که services/api وجود ندارد فعال نمی‌شود.",
+    "اگر الان به railway.json تغییر نام بدهی، Railway دپلوی را انجام می‌دهد",
+    "و سرویس مرتب ریاستارت می‌خورد و اعتبار رایگانت را می‌سوزاند.",
+    "توضیح کامل در docs/deployment-railway.md"
+  ],
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK"
+  },
+  "deploy": {
+    "startCommand": "uvicorn services.api.main:app --host 0.0.0.0 --port $PORT",
+    "healthcheckPath": "/health",
+    "healthcheckTimeout": 60,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3,
+    "numReplicas": 1
+  }
+}
