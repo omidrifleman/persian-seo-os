@@ -233,7 +233,9 @@ class DadmaEzafeBackend:
             return DadmaEzafeBackend._pipeline
 
         try:
-            from dadmatools.pipeline import language  # noqa: WPS433
+            # Submodule import is intentional: `from dadmatools.pipeline import language`
+            # is a different object and fails the gated kasreh contract tests.
+            import dadmatools.pipeline.language as language  # noqa: WPS433, PLR0402
         except ImportError as exc:
             raise EzafeBackendUnavailable(
                 "DadmaTools is required for ezafe detection. "

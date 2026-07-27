@@ -15,7 +15,7 @@ CACHE.mkdir(parents=True, exist_ok=True)
 def main() -> int:
     t0 = time.time()
     print(f"[{time.time() - t0:.1f}s] import language", flush=True)
-    from dadmatools.pipeline import language
+    import dadmatools.pipeline.language as language  # noqa: PLR0402
 
     print(f"[{time.time() - t0:.1f}s] create Pipeline(tok,kasreh) cache={CACHE}", flush=True)
     nlp = language.Pipeline("tok,kasreh", cache_dir=str(CACHE), gpu=False)

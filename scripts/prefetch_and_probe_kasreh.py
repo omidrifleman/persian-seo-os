@@ -57,7 +57,7 @@ def prefetch() -> None:
 
 
 def probe() -> None:
-    from dadmatools.pipeline import language
+    import dadmatools.pipeline.language as language  # noqa: PLR0402
 
     out_path = ROOT / "cache" / "kasreh_probe_result.jsonl"
     print("create Pipeline...", flush=True)
