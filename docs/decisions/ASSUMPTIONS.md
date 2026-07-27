@@ -13,9 +13,10 @@ CMS=وردپرس فقط (ADR-0004)، ارائه=سرویس محصول‌سازی
 کلید=پلتفرم+سهمیه per-tenant و BYOK اختیاری (ADR-0006). RLS معوق (ADR-0003).
 
 ## ASSUMPTION-003 — API داخلی DadmaTools برای kasreh
-**برچسب:** `NEEDS-CONFIRMATION` (رفتار runtime؛ تست‌ها با mock پوشش می‌دهند)
-**فرض:** backend از pipeline `tok,kasreh` با import تنبل داخل متد استفاده می‌کند؛
-نسخه پین‌شده `dadmatools==2.3.6`. اگر شکل API فرق کند فقط adapter عوض می‌شود.
+**برچسب:** `CONFIRMED`
+**یافته:** `token._.kasreh` با برچسب رشته‌ای (مثلاً `S-kasreh` / `O`).
+هر غیر-`O` مثبت است؛ برچسب خام در `raw_label`؛ `confidence=None` چون امتیاز نیست
+(None را ۱.۰ نخوان). اتصال به `display_form` هنوز ممنوع.
 
 ## ASSUMPTION-004 — volume vs تخمین حجم
 **برچسب:** `NEEDS-CONFIRMATION` (برش جدا؛ الان دست نزن)

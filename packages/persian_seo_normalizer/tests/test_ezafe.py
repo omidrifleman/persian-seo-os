@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""TDD tests for ezafe detection — written before implementation."""
+"""Unit + env-gated integration tests for ezafe detection."""
 from __future__ import annotations
 
 import importlib
@@ -11,13 +11,32 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 
+def _mark(
+    index: int,
+    token: str,
+    raw_label: str,
+    *,
+    confidence: float | None = None,
+):
+    """Build EzafeMark the way real Dadma labels look (string BIO-style, not bool)."""
+    from persian_seo_normalizer.ezafe import EzafeMark, parse_kasreh_label
+
+    has_ezafe, raw = parse_kasreh_label(raw_label)
+    return EzafeMark(
+        index=index,
+        token=token,
+        has_ezafe=has_ezafe,
+        confidence=confidence,
+        raw_label=raw,
+    )
+
+
 class TestBasePackageImport(unittest.TestCase):
     def test_base_package_import_without_nlp_extras(self):
         """Importing the package must not require dadmatools/torch."""
         for mod in list(sys.modules):
             if mod == "persian_seo_normalizer" or mod.startswith("persian_seo_normalizer."):
                 del sys.modules[mod]
-        # Ensure dadmatools is not already loaded as a side-effect of this suite.
         self.assertNotIn("dadmatools", sys.modules)
         pkg = importlib.import_module("persian_seo_normalizer")
         self.assertTrue(hasattr(pkg, "detect_ezafe"))
@@ -35,8 +54,15 @@ class TestEzafeApi(unittest.TestCase):
 
         self.assertTrue(callable(detect_ezafe))
         self.assertTrue(issubclass(EzafeBackendUnavailable, Exception))
-        mark = EzafeMark(index=0, token="کتاب", has_ezafe=True, confidence=0.9)
-        self.assertEqual(mark.confidence, 0.9)
+        mark = EzafeMark(
+            index=0,
+            token="کتاب",
+            has_ezafe=True,
+            confidence=None,
+            raw_label="S-kasreh",
+        )
+        self.assertIsNone(mark.confidence)
+        self.assertEqual(mark.raw_label, "S-kasreh")
 
     def test_missing_backend_raises_clear_error(self):
         from persian_seo_normalizer import EzafeBackendUnavailable, detect_ezafe
@@ -47,78 +73,143 @@ class TestEzafeApi(unittest.TestCase):
         self.assertTrue("nlp" in msg or "dadmatools" in msg or "extras" in msg)
 
     def test_detect_ezafe_returns_marks_with_mock_backend(self):
-        from persian_seo_normalizer import EzafeMark, detect_ezafe
+        from persian_seo_normalizer import detect_ezafe
 
         @dataclass
         class _FakeBackend:
-            def detect(self, text: str) -> list[EzafeMark]:
+            def detect(self, text: str):
                 return [
-                    EzafeMark(index=0, token="کتاب", has_ezafe=True, confidence=0.91),
-                    EzafeMark(index=1, token="خوب", has_ezafe=False, confidence=0.88),
+                    _mark(0, "کتاب", "S-kasreh"),
+                    _mark(1, "خوب", "O"),
                 ]
 
         marks = detect_ezafe("کتاب خوب", backend=_FakeBackend())
         self.assertEqual(len(marks), 2)
         self.assertEqual(marks[0].token, "کتاب")
+        self.assertEqual(marks[0].raw_label, "S-kasreh")
         self.assertTrue(marks[0].has_ezafe)
-        self.assertGreaterEqual(marks[0].confidence, 0.0)
-        self.assertLessEqual(marks[0].confidence, 1.0)
+        self.assertIsNone(marks[0].confidence)
+        self.assertEqual(marks[1].raw_label, "O")
+        self.assertFalse(marks[1].has_ezafe)
 
-    def test_confidence_required_on_marks(self):
-        from persian_seo_normalizer import EzafeMark, detect_ezafe
+    def test_confidence_none_when_backend_does_not_score(self):
+        """Dadma-style hard labels → confidence is None, never coerced to 1.0."""
+        from persian_seo_normalizer import detect_ezafe
 
         @dataclass
         class _FakeBackend:
-            def detect(self, text: str) -> list[EzafeMark]:
-                return [EzafeMark(index=0, token="خانه", has_ezafe=True, confidence=0.75)]
+            def detect(self, text: str):
+                return [_mark(0, "خانه", "S-kasreh", confidence=None)]
 
         marks = detect_ezafe("خانه بزرگ", backend=_FakeBackend())
-        self.assertTrue(hasattr(marks[0], "confidence"))
-        self.assertIsInstance(marks[0].confidence, float)
-        self.assertGreaterEqual(marks[0].confidence, 0.0)
-        self.assertLessEqual(marks[0].confidence, 1.0)
+        self.assertIsNone(marks[0].confidence)
+        self.assertEqual(marks[0].raw_label, "S-kasreh")
 
     def test_empty_and_whitespace(self):
-        from persian_seo_normalizer import EzafeMark, detect_ezafe
+        from persian_seo_normalizer import detect_ezafe
 
         @dataclass
         class _FakeBackend:
-            def detect(self, text: str) -> list[EzafeMark]:
+            def detect(self, text: str):
                 if not text.strip():
                     return []
-                return [EzafeMark(index=0, token=text, has_ezafe=False, confidence=1.0)]
+                return [_mark(0, text, "O")]
 
         backend = _FakeBackend()
         self.assertEqual(detect_ezafe("", backend=backend), [])
         self.assertEqual(detect_ezafe("   ", backend=backend), [])
 
     def test_emoji_and_mixed_script_do_not_crash(self):
-        from persian_seo_normalizer import EzafeMark, detect_ezafe
+        from persian_seo_normalizer import detect_ezafe
 
         @dataclass
         class _FakeBackend:
-            def detect(self, text: str) -> list[EzafeMark]:
-                return [EzafeMark(index=0, token=text, has_ezafe=False, confidence=0.5)]
+            def detect(self, text: str):
+                return [_mark(0, text, "O")]
 
         marks = detect_ezafe("سلام WordPress 👋 دنیا", backend=_FakeBackend())
         self.assertEqual(len(marks), 1)
+        self.assertEqual(marks[0].raw_label, "O")
 
     def test_mark_list_idempotent_re_detect(self):
-        from persian_seo_normalizer import EzafeMark, detect_ezafe
+        from persian_seo_normalizer import detect_ezafe
 
         @dataclass
         class _FakeBackend:
-            def detect(self, text: str) -> list[EzafeMark]:
+            def detect(self, text: str):
                 return [
-                    EzafeMark(index=0, token="قیمت", has_ezafe=True, confidence=0.8),
-                    EzafeMark(index=1, token="طلا", has_ezafe=False, confidence=0.7),
+                    _mark(0, "قیمت", "S-kasreh"),
+                    _mark(1, "طلا", "O"),
                 ]
 
         backend = _FakeBackend()
         text = "قیمت طلا"
-        once = detect_ezafe(text, backend=backend)
-        twice = detect_ezafe(text, backend=backend)
-        self.assertEqual(once, twice)
+        self.assertEqual(detect_ezafe(text, backend=backend), detect_ezafe(text, backend=backend))
+
+    def test_unknown_non_o_label_is_positive_and_logged(self):
+        from persian_seo_normalizer.ezafe import parse_kasreh_label
+
+        with self.assertLogs("persian_seo_normalizer.ezafe", level="WARNING") as cm:
+            has, raw = parse_kasreh_label("X-weird")
+        self.assertTrue(has)
+        self.assertEqual(raw, "X-weird")
+        self.assertTrue(any("Unknown kasreh label" in line for line in cm.output))
+
+
+@unittest.skipUnless(
+    os.getenv("PERSIAN_SEO_NLP_TESTS") == "1",
+    "set PERSIAN_SEO_NLP_TESTS=1 to run DadmaTools integration tests",
+)
+class TestEzafeDadmaIntegration(unittest.TestCase):
+    """Real DadmaTools backend — env-gated so the default suite stays offline/fast.
+
+    Phrase choices:
+    - WITH ezafe: «کتاب علی» — classic genitive NP; kasreh links کتاب to علی.
+    - WITHOUT ezafe: «او رفت» — subject + past verb; no ezafe between them.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from persian_seo_normalizer.ezafe import DadmaEzafeBackend
+
+        DadmaEzafeBackend._pipeline = None
+        DadmaEzafeBackend._pipeline_cache_dir = None
+        if not os.environ.get("PERSIAN_SEO_DADMA_CACHE"):
+            repo_cache = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "cache", "dadmatools")
+            )
+            os.environ["PERSIAN_SEO_DADMA_CACHE"] = repo_cache
+
+    def test_phrase_with_ezafe_yields_at_least_one_positive_mark(self):
+        from persian_seo_normalizer import detect_ezafe
+
+        marks = detect_ezafe("کتاب علی")
+        self.assertTrue(marks, "expected token marks from DadmaTools")
+        positives = [m for m in marks if m.has_ezafe]
+        self.assertGreaterEqual(
+            len(positives),
+            1,
+            f"expected ≥1 has_ezafe=True in «کتاب علی», got {marks!r}",
+        )
+        self.assertTrue(any(m.raw_label and m.raw_label != "O" for m in positives))
+        for m in marks:
+            if m.confidence is not None:
+                self.assertGreaterEqual(m.confidence, 0.0)
+                self.assertLessEqual(m.confidence, 1.0)
+
+    def test_phrase_without_ezafe_yields_no_positive_marks(self):
+        from persian_seo_normalizer import detect_ezafe
+
+        marks = detect_ezafe("او رفت")
+        positives = [m for m in marks if m.has_ezafe]
+        self.assertEqual(
+            positives,
+            [],
+            f"expected no has_ezafe=True in «او رفت», got {marks!r}",
+        )
+        for m in marks:
+            self.assertEqual(m.raw_label, "O")
+            self.assertIsNone(m.confidence)
 
 
 if __name__ == "__main__":
