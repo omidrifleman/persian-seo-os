@@ -51,17 +51,17 @@ class TestEzafeGoldMetrics(unittest.TestCase):
                 load_ezafe_gold(empty)
             self.assertIn("empty", str(ctx.exception).lower())
 
-    def test_load_valid_jsonl(self):
+    def test_load_valid_jsonl_unlabeled(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "g.jsonl"
             path.write_text(
                 '{"id":"a","text":"کتاب علی","tokens":["کتاب","علی"],'
-                '"ezafe":[1,0],"verified":false}\n',
+                '"ezafe":null,"verified":false}\n',
                 encoding="utf-8",
             )
-            examples = load_ezafe_gold(path)
+            examples = load_ezafe_gold(path, require_labeled=False)
             self.assertEqual(len(examples), 1)
-            self.assertEqual(examples[0].ezafe, (1, 0))
+            self.assertIsNone(examples[0].ezafe)
             self.assertFalse(examples[0].verified)
 
     def test_format_report_contains_counts(self):
