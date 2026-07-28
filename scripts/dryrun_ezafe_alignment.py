@@ -19,8 +19,11 @@ from persian_seo_normalizer.ezafe_gold import (
     ALIGNMENT_FAIL_THRESHOLD,
     GoldExample,
     classify_alignment_mismatch,
+    installed_dadmatools_version,
     load_ezafe_gold,
+    mint_dadma_tokens,
     tokens_aligned,
+    utc_now_iso,
     write_ezafe_gold,
 )
 
@@ -99,11 +102,18 @@ def main(argv: list[str] | None = None) -> int:
                 by_strata[s][key] += 1
 
         if args.apply_dadma_tokens:
+            tokens, spans, src, ver, ts = mint_dadma_tokens(
+                ex.text,
+                token_strings=model_tokens,
+                minted_at=utc_now_iso(),
+                version=installed_dadmatools_version(),
+            )
             reminted.append(
                 GoldExample(
                     id=ex.id,
                     text=ex.text,
-                    tokens=model_tokens,
+                    tokens=tokens,
+                    char_spans=spans,
                     ezafe=None,
                     note=ex.note,
                     verified=False,
@@ -118,6 +128,9 @@ def main(argv: list[str] | None = None) -> int:
                     revision_id=ex.revision_id,
                     labeled_by="",
                     labeled_at="",
+                    tokenizer_source=src,
+                    dadmatools_version=ver,
+                    tokens_minted_at=ts,
                     extra=dict(ex.extra),
                 )
             )

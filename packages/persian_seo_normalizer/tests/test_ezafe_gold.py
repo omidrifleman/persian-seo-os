@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from persian_seo_normalizer.ezafe_gold import (
     BinaryCounts,
+    align_token_char_spans,
     classify_alignment_mismatch,
     confusion_counts,
     format_metrics_report,
@@ -107,6 +108,10 @@ class TestEzafeGoldMetrics(unittest.TestCase):
             classify_alignment_mismatch(["iPhone"], ["i", "Phone"]),
             "latin",
         )
+        text = "آی (۱۲) ب."
+        toks = ("آی", "(", "۱۲", ")", "ب", ".")
+        spans = align_token_char_spans(text, toks)
+        self.assertEqual([text[a:b] for a, b in spans], list(toks))
 
 
 if __name__ == "__main__":

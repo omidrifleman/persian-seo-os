@@ -7,7 +7,11 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from persian_seo_normalizer.ezafe_gold import GoldExample, evaluate_metric_splits
+from persian_seo_normalizer.ezafe_gold import (
+    GoldExample,
+    align_token_char_spans,
+    evaluate_metric_splits,
+)
 
 
 def _ex(
@@ -18,10 +22,13 @@ def _ex(
     strata: tuple[str, ...] = (),
     ezafe: tuple[int, ...] = (0, 1),
 ) -> GoldExample:
+    text = "کتاب علی"
+    tokens = ("کتاب", "علی")
     return GoldExample(
         id=eid,
-        text="کتاب علی",
-        tokens=("کتاب", "علی"),
+        text=text,
+        tokens=tokens,
+        char_spans=align_token_char_spans(text, tokens),
         ezafe=ezafe,
         verified=True,
         strata=strata,
@@ -30,6 +37,9 @@ def _ex(
         source_url="https://example.com/",
         license="test",
         collected_at="2026-01-01T00:00:00+00:00",
+        tokenizer_source="test",
+        dadmatools_version="test",
+        tokens_minted_at="2026-01-01T00:00:00+00:00",
     )
 
 
@@ -39,7 +49,7 @@ class TestEvalSplits(unittest.TestCase):
             _ex(
                 f"w{i}",
                 source="fa.wikipedia.org",
-                source_kind="wikipedia",
+                source_kind="wiki",
                 strata=("zwnj",),
             )
             for i in range(10)
@@ -55,7 +65,7 @@ class TestEvalSplits(unittest.TestCase):
             _ex(
                 f"c{i}",
                 source="digiato.com",
-                source_kind="blog_portal",
+                source_kind="magazine",
                 strata=("latin_brand",),
             )
             for i in range(20)

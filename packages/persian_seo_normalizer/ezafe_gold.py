@@ -32,10 +32,38 @@ _EDGE_PUNCT = re.compile(r"^[\s\"'«»\(\)\[\]\{\}،,؛;:]+|[\s\"'«»\(\)\[\]\{
 
 MIN_EVAL_EXAMPLES = 20
 ALIGNMENT_FAIL_THRESHOLD = 0.10
+MIN_ECOMMERCE_TARGET = 40
 
-# Bucket labels kept separate from concrete domain `source`.
-SOURCE_KIND_WIKIPEDIA = "wikipedia"
-SOURCE_KIND_COMMERCIAL = "commercial"  # rollup for eval: non-wikipedia
+# Fine source_kind buckets (record-level).
+SOURCE_KIND_WIKI = "wiki"
+SOURCE_KIND_NEWS = "news"
+SOURCE_KIND_MAGAZINE = "magazine"
+SOURCE_KIND_ECOMMERCE = "ecommerce"
+SOURCE_KINDS = frozenset(
+    {SOURCE_KIND_WIKI, SOURCE_KIND_NEWS, SOURCE_KIND_MAGAZINE, SOURCE_KIND_ECOMMERCE}
+)
+# Back-compat alias used by older code/tests.
+SOURCE_KIND_WIKIPEDIA = SOURCE_KIND_WIKI
+SOURCE_KIND_COMMERCIAL = "commercial"  # rollup only (not stored)
+
+TOKENIZER_SOURCE_DADMA = "dadmatools"
+
+DOMAIN_SOURCE_KIND: dict[str, str] = {
+    "fa.wikipedia.org": SOURCE_KIND_WIKI,
+    "hamshahrionline.ir": SOURCE_KIND_NEWS,
+    "isna.ir": SOURCE_KIND_NEWS,
+    "khabaronline.ir": SOURCE_KIND_NEWS,
+    "digiato.com": SOURCE_KIND_MAGAZINE,
+    "tarafdari.com": SOURCE_KIND_MAGAZINE,
+    "zoomit.ir": SOURCE_KIND_MAGAZINE,
+    "digikala.com": SOURCE_KIND_ECOMMERCE,
+    "blog.okala.com": SOURCE_KIND_ECOMMERCE,
+    "okala.com": SOURCE_KIND_ECOMMERCE,
+    "basalam.com": SOURCE_KIND_ECOMMERCE,
+    "emalls.ir": SOURCE_KIND_ECOMMERCE,
+    "torob.com": SOURCE_KIND_ECOMMERCE,
+    "modiseh.com": SOURCE_KIND_ECOMMERCE,
+}
 
 
 @dataclass(frozen=True)
@@ -43,6 +71,7 @@ class GoldExample:
     id: str
     text: str
     tokens: tuple[str, ...]
+    char_spans: tuple[tuple[int, int], ...]
     ezafe: tuple[int, ...] | None = None
     note: str = ""
     verified: bool = False
@@ -57,11 +86,33 @@ class GoldExample:
     revision_id: str = ""
     labeled_by: str = ""
     labeled_at: str = ""
+    tokenizer_source: str = ""
+    dadmatools_version: str = ""
+    tokens_minted_at: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.tokens:
             raise ValueError(f"gold id={self.id!r}: tokens must be non-empty")
+        if len(self.char_spans) != len(self.tokens):
+            raise ValueError(
+                f"gold id={self.id!r}: len(char_spans)={len(self.char_spans)} "
+                f"!= len(tokens)={len(self.tokens)}"
+            )
+        for i, ((start, end), tok) in enumerate(
+            zip(self.char_spans, self.tokens, strict=True)
+        ):
+            if not (0 <= start < end <= len(self.text)):
+                raise ValueError(
+                    f"gold id={self.id!r} token_index={i}: bad char_span "
+                    f"[{start}, {end}) for text_len={len(self.text)}"
+                )
+            slice_ = self.text[start:end]
+            if slice_ != tok:
+                raise ValueError(
+                    f"gold id={self.id!r} token_index={i}: char_span text "
+                    f"{slice_!r} != token {tok!r}"
+                )
         if self.ezafe is not None:
             if len(self.tokens) != len(self.ezafe):
                 raise ValueError(
@@ -109,6 +160,12 @@ class BinaryCounts:
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def canonical_domain(url: str) -> str:
+    """Host without leading www.; empty if URL unparsable."""
+    host = (urlparse(url).netloc or "").lower().strip()
+    return host.removeprefix("www.")
 
 
 def whitespace_word_count(text: str) -> int:
@@ -163,18 +220,89 @@ def detect_strata(text: str) -> list[str]:
     return tags
 
 
-def canonical_domain(url: str) -> str:
-    """Host without leading www.; empty if URL unparsable."""
-    host = (urlparse(url).netloc or "").lower().strip()
-    return host.removeprefix("www.")
+def align_token_char_spans(text: str, tokens: Iterable[str]) -> tuple[tuple[int, int], ...]:
+    """Map token strings onto original `text` in order (character offsets).
+
+    Dadma/spaCy may insert spaces in its internal Doc.text; spans must land on
+    the raw gold `text` so labels survive tokenizer version changes.
+    """
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    for i, tok in enumerate(tokens):
+        if not tok:
+            raise ValueError(f"empty token at index {i}")
+        # Prefer match at/after current cursor; skip intervening whitespace.
+        search_from = pos
+        while search_from < len(text) and text[search_from].isspace():
+            search_from += 1
+        if text.startswith(tok, search_from):
+            start = search_from
+        else:
+            start = text.find(tok, pos)
+            if start < 0:
+                raise ValueError(
+                    f"cannot align token_index={i} {tok!r} in text={text!r} "
+                    f"after pos={pos}"
+                )
+        end = start + len(tok)
+        spans.append((start, end))
+        pos = end
+    return tuple(spans)
+
+
+def installed_dadmatools_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("dadmatools")
+    except Exception:  # noqa: BLE001 — report unknown rather than crash mint path
+        return "unknown"
+
+
+def resolve_source_kind(*, source: str, source_kind: str = "", source_url: str = "") -> str:
+    """Map legacy buckets / domains onto wiki|news|magazine|ecommerce."""
+    if source_kind in SOURCE_KINDS:
+        return source_kind
+    # Legacy bucket names.
+    legacy = {
+        "wikipedia": SOURCE_KIND_WIKI,
+        "fa.wikipedia": SOURCE_KIND_WIKI,
+        "news_portal": SOURCE_KIND_NEWS,
+        "blog_portal": SOURCE_KIND_MAGAZINE,
+        "shop_mag": SOURCE_KIND_ECOMMERCE,
+        "shop_wiki_stub": SOURCE_KIND_ECOMMERCE,
+    }
+    if source_kind in legacy:
+        return legacy[source_kind]
+    if source in legacy:
+        return legacy[source]
+    domain = source if "." in source else canonical_domain(source_url)
+    if domain in DOMAIN_SOURCE_KIND:
+        return DOMAIN_SOURCE_KIND[domain]
+    if "wikipedia" in (source or "") or "wikipedia" in domain:
+        return SOURCE_KIND_WIKI
+    # Incomplete fixtures / legacy stubs — do not invent commercial kind.
+    if not source and not source_url and not source_kind:
+        return SOURCE_KIND_MAGAZINE
+    raise ValueError(
+        f"cannot resolve source_kind for source={source!r} "
+        f"source_kind={source_kind!r} url={source_url!r}"
+    )
 
 
 def is_wikipedia_example(ex: GoldExample) -> bool:
-    if ex.source_kind == SOURCE_KIND_WIKIPEDIA:
+    kind = ex.source_kind or resolve_source_kind(
+        source=ex.source, source_kind=ex.source_kind, source_url=ex.source_url
+    )
+    if kind == SOURCE_KIND_WIKI:
         return True
     if ex.source in {"fa.wikipedia", "fa.wikipedia.org"}:
         return True
     return "wikipedia.org" in (ex.source or "")
+
+
+def is_commercial_example(ex: GoldExample) -> bool:
+    return not is_wikipedia_example(ex)
 
 
 def example_to_json(ex: GoldExample) -> dict[str, Any]:
@@ -182,6 +310,7 @@ def example_to_json(ex: GoldExample) -> dict[str, Any]:
         "id": ex.id,
         "text": ex.text,
         "tokens": list(ex.tokens),
+        "char_spans": [list(span) for span in ex.char_spans],
         "ezafe": None if ex.ezafe is None else list(ex.ezafe),
         "note": ex.note,
         "verified": ex.verified,
@@ -196,6 +325,9 @@ def example_to_json(ex: GoldExample) -> dict[str, Any]:
         "revision_id": ex.revision_id,
         "labeled_by": ex.labeled_by,
         "labeled_at": ex.labeled_at,
+        "tokenizer_source": ex.tokenizer_source,
+        "dadmatools_version": ex.dadmatools_version,
+        "tokens_minted_at": ex.tokens_minted_at,
     }
     row.update(ex.extra)
     return row
@@ -208,10 +340,19 @@ def example_from_json(raw: dict[str, Any]) -> GoldExample:
         ezafe = None
     else:
         ezafe = tuple(int(v) for v in ezafe_raw)
+    tokens = tuple(str(t) for t in raw["tokens"])
+    text = str(raw["text"])
+    spans_raw = raw.get("char_spans")
+    if spans_raw is None:
+        # Legacy rows: derive spans from tokens (must still match text).
+        char_spans = align_token_char_spans(text, tokens)
+    else:
+        char_spans = tuple((int(a), int(b)) for a, b in spans_raw)
     known = {
         "id",
         "text",
         "tokens",
+        "char_spans",
         "ezafe",
         "note",
         "verified",
@@ -226,22 +367,23 @@ def example_from_json(raw: dict[str, Any]) -> GoldExample:
         "revision_id",
         "labeled_by",
         "labeled_at",
+        "tokenizer_source",
+        "dadmatools_version",
+        "tokens_minted_at",
     }
     extra = {k: v for k, v in raw.items() if k not in known}
     source = str(raw.get("source", ""))
-    source_kind = str(raw.get("source_kind", "") or "")
-    if not source_kind:
-        # Backward-compat for pre-migration buckets / wiki tag.
-        if source in {"fa.wikipedia", "fa.wikipedia.org"} or "wikipedia" in source:
-            source_kind = SOURCE_KIND_WIKIPEDIA
-        elif source in {"blog_portal", "shop_mag", "news_portal"}:
-            source_kind = source
-        else:
-            source_kind = "web"
+    source_url = str(raw.get("source_url", ""))
+    source_kind = resolve_source_kind(
+        source=source,
+        source_kind=str(raw.get("source_kind", "") or ""),
+        source_url=source_url,
+    )
     return GoldExample(
         id=str(raw["id"]),
-        text=str(raw["text"]),
-        tokens=tuple(str(t) for t in raw["tokens"]),
+        text=text,
+        tokens=tokens,
+        char_spans=char_spans,
         ezafe=ezafe,
         note=str(raw.get("note", "")),
         verified=bool(raw.get("verified", False)),
@@ -249,13 +391,16 @@ def example_from_json(raw: dict[str, Any]) -> GoldExample:
         strata=tuple(str(s) for s in raw.get("strata", []) or []),
         source=source,
         source_kind=source_kind,
-        source_url=str(raw.get("source_url", "")),
+        source_url=source_url,
         license=str(raw.get("license", "")),
         collected_at=str(raw.get("collected_at", "")),
         page_title=str(raw.get("page_title", "")),
         revision_id=str(raw.get("revision_id", "")),
         labeled_by=str(raw.get("labeled_by", "")),
         labeled_at=str(raw.get("labeled_at", "")),
+        tokenizer_source=str(raw.get("tokenizer_source", "")),
+        dadmatools_version=str(raw.get("dadmatools_version", "")),
+        tokens_minted_at=str(raw.get("tokens_minted_at", "")),
         extra=extra,
     )
 
@@ -404,10 +549,12 @@ def classify_alignment_mismatch(ours: list[str], model: list[str]) -> str:
 
 def with_replaced_tokens(ex: GoldExample, tokens: tuple[str, ...]) -> GoldExample:
     """Replace token boundaries only; never copies ezafe labels from a model."""
+    spans = align_token_char_spans(ex.text, tokens)
     return GoldExample(
         id=ex.id,
         text=ex.text,
         tokens=tokens,
+        char_spans=spans,
         ezafe=None if ex.ezafe is None else ex.ezafe,
         note=ex.note,
         verified=ex.verified,
@@ -422,6 +569,9 @@ def with_replaced_tokens(ex: GoldExample, tokens: tuple[str, ...]) -> GoldExampl
         revision_id=ex.revision_id,
         labeled_by=ex.labeled_by,
         labeled_at=ex.labeled_at,
+        tokenizer_source=ex.tokenizer_source,
+        dadmatools_version=ex.dadmatools_version,
+        tokens_minted_at=ex.tokens_minted_at,
         extra=dict(ex.extra),
     )
 
@@ -436,6 +586,7 @@ def with_source_fields(
         id=ex.id,
         text=ex.text,
         tokens=ex.tokens,
+        char_spans=ex.char_spans,
         ezafe=ex.ezafe,
         note=ex.note,
         verified=ex.verified,
@@ -450,8 +601,103 @@ def with_source_fields(
         revision_id=ex.revision_id,
         labeled_by=ex.labeled_by,
         labeled_at=ex.labeled_at,
+        tokenizer_source=ex.tokenizer_source,
+        dadmatools_version=ex.dadmatools_version,
+        tokens_minted_at=ex.tokens_minted_at,
         extra=dict(ex.extra),
     )
+
+
+def mint_dadma_tokens(
+    text: str,
+    *,
+    token_strings: Iterable[str],
+    minted_at: str | None = None,
+    version: str | None = None,
+) -> tuple[tuple[str, ...], tuple[tuple[int, int], ...], str, str, str]:
+    """Build tokens + char_spans + mint metadata (no ezafe labels)."""
+    tokens = tuple(token_strings)
+    spans = align_token_char_spans(text, tokens)
+    return (
+        tokens,
+        spans,
+        TOKENIZER_SOURCE_DADMA,
+        version or installed_dadmatools_version(),
+        minted_at or utc_now_iso(),
+    )
+
+
+def verify_example_tokens_against_model(
+    ex: GoldExample,
+    *,
+    model_tokens: list[str],
+) -> list[str]:
+    """Return list of mismatch reasons (empty = ok). Does not use ezafe labels."""
+    problems: list[str] = []
+    if list(ex.tokens) != model_tokens:
+        problems.append("tokens_mismatch")
+    try:
+        fresh_spans = align_token_char_spans(ex.text, model_tokens)
+    except ValueError as exc:
+        problems.append(f"align_failed:{exc}")
+        return problems
+    if tuple(ex.char_spans) != fresh_spans:
+        problems.append("char_spans_mismatch")
+    for i, ((start, end), tok) in enumerate(zip(ex.char_spans, ex.tokens, strict=True)):
+        if ex.text[start:end] != tok:
+            problems.append(f"span_slice_mismatch@{i}")
+            break
+    return problems
+
+
+def sample_stratified_labeling_batch(
+    examples: list[GoldExample],
+    *,
+    n_wiki: int = 25,
+    n_commercial: int = 25,
+    seed: int = 20260728,
+) -> list[GoldExample]:
+    """Pick a balanced labeling batch with strata coverage; deterministic seed."""
+    import random
+
+    rng = random.Random(seed)
+    wiki = [ex for ex in examples if is_wikipedia_example(ex)]
+    commercial = [ex for ex in examples if is_commercial_example(ex)]
+    rng.shuffle(wiki)
+    rng.shuffle(commercial)
+
+    def pick(pool: list[GoldExample], n: int) -> list[GoldExample]:
+        selected: list[GoldExample] = []
+        used: set[str] = set()
+        filled = {k: 0 for k in STRATA_QUOTAS}
+        # Cover strata first (greedy).
+        changed = True
+        while changed and len(selected) < n:
+            changed = False
+            need = [k for k, q in STRATA_QUOTAS.items() if filled[k] < max(1, q // 6)]
+            for stratum in need or list(STRATA_QUOTAS):
+                for cand in pool:
+                    if cand.id in used:
+                        continue
+                    if stratum in cand.strata:
+                        selected.append(cand)
+                        used.add(cand.id)
+                        for s in cand.strata:
+                            if s in filled:
+                                filled[s] += 1
+                        changed = True
+                        break
+                if len(selected) >= n:
+                    break
+        for cand in pool:
+            if len(selected) >= n:
+                break
+            if cand.id not in used:
+                selected.append(cand)
+                used.add(cand.id)
+        return selected[:n]
+
+    return pick(wiki, n_wiki) + pick(commercial, n_commercial)
 
 
 def evaluate_metric_splits(
@@ -509,43 +755,41 @@ def evaluate_metric_splits(
 
 WORKSHEET_FIELDS = [
     "id",
-    "text",
     "token_index",
     "token",
     "ezafe",
     "ambiguous",
-    "note",
-    "strata",
-    "source",
-    "source_url",
 ]
 
 
 def make_worksheet_rows(examples: Iterable[GoldExample]) -> list[dict[str, str]]:
-    """One CSV row per token; ezafe column left blank for blind labeling."""
+    """Sentence header row + one token row; ezafe/ambiguous left blank (blind)."""
     rows: list[dict[str, str]] = []
     for ex in examples:
-        strata = "|".join(ex.strata)
+        rows.append(
+            {
+                "id": ex.id,
+                "token_index": "",
+                "token": ex.text,
+                "ezafe": "",
+                "ambiguous": "",
+            }
+        )
         for i, tok in enumerate(ex.tokens):
             rows.append(
                 {
                     "id": ex.id,
-                    "text": ex.text if i == 0 else "",
                     "token_index": str(i),
                     "token": tok,
                     "ezafe": "",  # NEVER pre-fill from a model
                     "ambiguous": "",
-                    "note": ex.note if i == 0 else "",
-                    "strata": strata if i == 0 else "",
-                    "source": ex.source if i == 0 else "",
-                    "source_url": ex.source_url if i == 0 else "",
                 }
             )
     return rows
 
 
 def write_worksheet_csv(path: str | Path, examples: Iterable[GoldExample]) -> int:
-    """UTF-8 with BOM for Excel on Windows. Returns row count."""
+    """UTF-8 with BOM for Excel on Windows. Returns data row count (incl. headers)."""
     rows = make_worksheet_rows(examples)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -581,11 +825,15 @@ def ingest_worksheet_csv(
             eid = (row.get("id") or "").strip()
             if not eid:
                 raise ValueError(f"Worksheet line {line_no}: empty id")
+            idx_raw = (row.get("token_index") or "").strip()
+            if idx_raw == "":
+                # Sentence context header row — not a label target.
+                continue
             try:
-                idx = int((row.get("token_index") or "").strip())
+                idx = int(idx_raw)
             except ValueError as exc:
                 raise ValueError(
-                    f"Worksheet line {line_no}: token_index must be int"
+                    f"Worksheet line {line_no}: token_index must be int or empty"
                 ) from exc
             tok = row.get("token") or ""
             lab = (row.get("ezafe") or "").strip()
@@ -629,6 +877,7 @@ def ingest_worksheet_csv(
                 id=base.id,
                 text=base.text,
                 tokens=base.tokens,
+                char_spans=base.char_spans,
                 ezafe=tuple(labels),
                 note=base.note,
                 verified=True,
@@ -643,6 +892,9 @@ def ingest_worksheet_csv(
                 revision_id=base.revision_id,
                 labeled_by=labeled_by,
                 labeled_at=stamped,
+                tokenizer_source=base.tokenizer_source,
+                dadmatools_version=base.dadmatools_version,
+                tokens_minted_at=base.tokens_minted_at,
                 extra=base.extra,
             )
         )

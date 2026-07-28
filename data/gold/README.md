@@ -3,81 +3,69 @@
 ## Purpose
 
 `ezafe_gold.jsonl` holds **one short Persian sentence per record** (not a
-paragraph) for **human-blind** ezafe (kasreh-ezafe) labeling and later offline
-evaluation. Labels must never be pre-filled from `detect_ezafe` or any other
-model. Token *boundaries* may follow DadmaTools after an alignment dry-run;
-that is not a label leak (see guidelines).
+paragraph) for **human-blind** ezafe labeling. Labels attach to **character
+spans** (`char_spans`) on `text`; token index is display-only. Labels must
+never be pre-filled from `detect_ezafe`.
 
 Guidelines: [`docs/gold-ezafe-guidelines.md`](../../docs/gold-ezafe-guidelines.md).
 
-## Sources and licenses
+## Sources and licenses (current corpus)
 
-| `source` (domain) | `source_kind` | n sentences | License / terms |
+| `source` | `source_kind` | n | License / terms |
 | --- | --- | ---: | --- |
-| `fa.wikipedia.org` | `wikipedia` | 120 | **CC BY-SA 4.0** — attribution via `page_title`, `revision_id`, `source_url` |
-| `tarafdari.com` | `blog_portal` | 21 | `source-site-terms (snippet for evaluation only)` |
-| `digiato.com` | `blog_portal` | 14 | same |
-| `hamshahrionline.ir` | `news_portal` | 14 | same |
-| `blog.okala.com` | `shop_mag` | 9 | same |
-| `digikala.com` | `shop_mag` | 7 | same |
+| `fa.wikipedia.org` | `wiki` | 120 | **CC BY-SA 4.0** |
+| `tarafdari.com` | `magazine` | 21 | site terms (eval snippet) |
+| `digiato.com` | `magazine` | 14 | site terms (eval snippet) |
+| `hamshahrionline.ir` | `news` | 14 | site terms (eval snippet) |
+| `digikala.com` | `ecommerce` | 14 | site terms (eval snippet) |
+| `blog.okala.com` | `ecommerce` | 9 | site terms (eval snippet) |
+| `modiseh.com` | `ecommerce` | 8 | site terms (eval snippet) |
+| `basalam.com` | `ecommerce` | 4 | site terms (eval snippet) |
+| `emalls.ir` | `ecommerce` | 3 | site terms (eval snippet) |
+| `okala.com` | `ecommerce` | 2 | site terms (eval snippet) |
 
-Each non-wiki record is a **single sentence** harvested once from a public HTML
-page (`source_url` + `collected_at`). Full-page redistribution is not intended.
+Each non-wiki record is a **single sentence** (`source_url` + `collected_at`).
+Full-page redistribution is not intended.
 
-`technolife.ir` (15 sentences) was **removed**: robots.txt carries
-`Content-Signal: ai-train=no`, so status for an ML-eval gold set is not clear.
-Unclear → drop, do not keep ambiguous rows.
+`technolife.ir` remains **excluded** (`Content-Signal: ai-train=no`).
 
-Sampling is a **one-time online harvest** (`scripts/collect_ezafe_gold.py`).
-Unit tests must not call that script or the network.
+## robots.txt / Content-Signal (kept domains)
 
-## Token contract (alignment dry-run)
+Checked 2026-07-28 with UA `persian-seo-os-ezafe-gold/0.1`:
 
-Dry-run on 185 unlabeled sentences (`scripts/dryrun_ezafe_alignment.py`,
-2026-07-28):
-
-| | n_aligned | n_unaligned | rate |
-| --- | ---: | ---: | ---: |
-| hand whitespace tokens | 3 | 182 | **98.4%** fail |
-| after Dadma token remint | 185 | 0 | 0% |
-
-Dominant mismatch buckets before remint: punctuation 114, other 30, zwnj 19,
-number 18, latin 1. Decision: **worksheet `tokens` = DadmaTools boundaries**.
-`ezafe` labels remain null until human blind labeling. Summary file:
-`alignment_dryrun_summary.json`.
-
-## robots.txt check (2026-07-28)
-
-UA used for harvest: `persian-seo-os-ezafe-gold/0.1 …`
-
-| Domain | robots outcome for harvested URL | Kept? |
+| Domain | Outcome | Kept? |
 | --- | --- | --- |
-| `digiato.com` | `User-agent: *` allows `/` (only wp-admin etc. disallowed) | yes |
-| `tarafdari.com` | allows site root; disallows Drupal internals | yes |
-| `digikala.com` | allows `/mag/` (query/checkout paths disallowed) | yes |
-| `blog.okala.com` | allows `/` (wp-admin disallowed) | yes |
-| `hamshahrionline.ir` | allows `/` | yes |
-| `technolife.ir` | Allow `/` but `Content-Signal: ai-train=no` → **unclear for ML gold** | **no** |
-| `fa.wikipedia.org` | HTML crawlers: `Disallow: /w/`; harvest used **MediaWiki API** under Wikimedia API etiquette (identified UA + throttle), CC BY-SA | yes |
+| digiato.com | allow `/` | yes |
+| tarafdari.com | allow root | yes |
+| digikala.com | allow `/mag/` | yes |
+| blog.okala.com | allow `/` | yes |
+| okala.com | allow `/` | yes |
+| hamshahrionline.ir | allow `/` | yes |
+| basalam.com | allow `/`, no ai-train=no | yes |
+| emalls.ir | allow `/`, no ai-train=no | yes |
+| modiseh.com | allow `/`, no ai-train=no | yes |
+| torob.com | allow `/` but harvest often times out; not required for ≥3-domain ecommerce | optional |
+| technolife.ir | `ai-train=no` → unclear for ML gold | **no** |
+| fa.wikipedia.org | MediaWiki API under Wikimedia etiquette (not HTML `/w/` crawl) | yes |
 
-## Record fields (selected)
+## Token contract
 
-- `text`, `tokens` — one sentence and token boundaries for the worksheet
-- `ezafe` — `null` until human ingest; then `0|1` per token
-- `verified`, `ambiguous`, `labeled_by`, `labeled_at`
-- `strata` — sampling strata tags (quotas), not gold labels
-- `source` — concrete domain (`fa.wikipedia.org`, `digiato.com`, …)
-- `source_kind` — bucket (`wikipedia`, `blog_portal`, `shop_mag`, `news_portal`)
-- `source_url`, `license`, `collected_at`
-- Wikipedia extras: `page_title`, `revision_id`
+- `tokens` + required `char_spans` + `tokenizer_source=dadmatools` +
+  `dadmatools_version` + `tokens_minted_at`
+- Verify (env-gated Dadma cache): `python scripts/verify_gold_tokens.py`
+- Eval refuses to score on mismatch
+
+## Labeling batch 1
+
+- Worksheet: `ezafe_worksheet_batch1_seed20260728.csv` (UTF-8 BOM)
+- Manifest: `ezafe_worksheet_batch1_seed20260728.manifest.json` (ids + seed)
+- Stratified: 25 wiki + 25 commercial; no batch-2 overlap via manifest ids
 
 ## Workflow
 
-1. Collect (once): `python scripts/collect_ezafe_gold.py`
-2. Source normalize: `python scripts/migrate_ezafe_sources.py`
-3. Alignment dry-run: `python scripts/dryrun_ezafe_alignment.py`  
-   (no worksheet until this report is reviewed)
-4. Worksheet: `python scripts/make_ezafe_worksheet.py`
-5. Human labels in Excel/LibreOffice
-6. Ingest: `python scripts/ingest_ezafe_worksheet.py --worksheet … --labeled-by NAME`
-7. Eval (offline, needs Dadma cache): `python scripts/eval_ezafe_gold.py`
+1. Expand ecommerce if needed: `python scripts/expand_ecommerce_gold.py`
+2. Remint spans: `python scripts/remint_gold_char_spans.py`
+3. Verify: `python scripts/verify_gold_tokens.py`
+4. Worksheet: `python scripts/make_ezafe_worksheet.py --seed 20260728`
+5. Human labels → `ingest_ezafe_worksheet.py`
+6. Eval: `python scripts/eval_ezafe_gold.py`

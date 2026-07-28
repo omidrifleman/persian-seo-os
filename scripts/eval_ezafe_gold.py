@@ -3,12 +3,14 @@
 Outputs three levels: overall, by source rollup (wikipedia vs commercial),
 by strata. Slices with fewer than MIN_EVAL_EXAMPLES examples print
 insufficient_sample and omit F1 numbers.
+
+Refuses to score if gold tokens/char_spans do not match the installed
+DadmaTools tokenizer (shifted labels would silently corrupt metrics).
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from persian_seo_normalizer.ezafe_gold import (
     evaluate_metric_splits,
     load_ezafe_gold,
 )
+from verify_gold_tokens import _ensure_cache_env, verify_gold_file
 
 
 def _pred_ezafe_flags(text: str, tokens: tuple[str, ...]) -> list[int]:
@@ -48,22 +51,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    gate = _ensure_cache_env()
+    if gate is not None:
+        return gate
+
+    verify_report = verify_gold_file(args.gold)
+    if verify_report["n_mismatch"]:
+        print(
+            "ERROR: gold tokens/char_spans do not match installed DadmaTools. "
+            "Refusing to score (labels would be shifted).",
+            file=sys.stderr,
+        )
+        print(json.dumps(verify_report, ensure_ascii=False, indent=2), file=sys.stderr)
+        return 2
+
     try:
         examples = load_ezafe_gold(args.gold, require_labeled=True)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-
-    if not os.environ.get("PERSIAN_SEO_DADMA_CACHE"):
-        repo_cache = ROOT / "cache" / "dadmatools"
-        if repo_cache.is_dir():
-            os.environ["PERSIAN_SEO_DADMA_CACHE"] = str(repo_cache.resolve())
-        else:
-            print(
-                "ERROR: set PERSIAN_SEO_DADMA_CACHE to an absolute prepared cache path.",
-                file=sys.stderr,
-            )
-            return 2
 
     predictions = {
         ex.id: _pred_ezafe_flags(ex.text, ex.tokens) for ex in examples

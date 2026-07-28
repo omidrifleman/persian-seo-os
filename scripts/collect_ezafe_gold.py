@@ -21,10 +21,12 @@ sys.path.insert(0, str(ROOT / "packages"))
 
 from persian_seo_normalizer.ezafe_gold import (
     GoldExample,
+    align_token_char_spans,
     assign_strata_quotas,
     canonical_domain,
     detect_strata,
     load_ezafe_gold,
+    resolve_source_kind,
     tokenize_raw,
     utc_now_iso,
     whitespace_word_count,
@@ -154,22 +156,25 @@ def fetch_wikipedia_fa(limit: int = 250) -> list[GoldExample]:
                     continue
                 strata = detect_strata(sent)
                 eid = f"wiki-{pageid}-{len(out):04d}"
+                tokens_t = tuple(tokens)
                 out.append(
                     GoldExample(
                         id=eid,
                         text=sent,
-                        tokens=tuple(tokens),
+                        tokens=tokens_t,
+                        char_spans=align_token_char_spans(sent, tokens_t),
                         ezafe=None,
                         verified=False,
                         strata=tuple(strata),
                         source="fa.wikipedia.org",
-                        source_kind="wikipedia",
+                        source_kind="wiki",
                         source_url=url,
                         license="CC BY-SA 4.0",
                         collected_at=collected_at,
                         page_title=title,
                         revision_id=revid,
                         note="unlabeled candidate; blind human labeling required",
+                        tokenizer_source="whitespace_raw",
                     )
                 )
                 if len(out) >= limit:
@@ -240,20 +245,26 @@ def fetch_shop_blog(limit: int = 160) -> list[GoldExample]:
                 continue
             strata = detect_strata(sent)
             eid = f"web-{len(out):04d}"
+            tokens_t = tuple(tokens)
+            domain = canonical_domain(url) or kind
             out.append(
                 GoldExample(
                     id=eid,
                     text=sent,
-                    tokens=tuple(tokens),
+                    tokens=tokens_t,
+                    char_spans=align_token_char_spans(sent, tokens_t),
                     ezafe=None,
                     verified=False,
                     strata=tuple(strata),
-                    source=canonical_domain(url) or kind,
-                    source_kind=kind,
+                    source=domain,
+                    source_kind=resolve_source_kind(
+                        source=domain, source_kind=kind, source_url=url
+                    ),
                     source_url=url,
                     license="source-site-terms (snippet for evaluation only)",
                     collected_at=collected_at,
                     note="unlabeled candidate; blind human labeling required",
+                    tokenizer_source="whitespace_raw",
                 )
             )
             if len(out) >= limit:
@@ -284,7 +295,7 @@ def select_corpus(
     web_count = 0
 
     def is_wiki(ex: GoldExample) -> bool:
-        return ex.source_kind == "wikipedia" or ex.source in {
+        return ex.source_kind == "wiki" or ex.source in {
             "fa.wikipedia",
             "fa.wikipedia.org",
         }
