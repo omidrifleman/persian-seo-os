@@ -29,11 +29,14 @@ _OBSERVED_POSITIVE_LABELS = {"s-kasreh", "b-kasreh", "i-kasreh", "e-kasreh"}
 _logged_unknown_labels: set[str] = set()
 
 CACHE_ENV = "PERSIAN_SEO_DADMA_CACHE"
+REQUIRE_CACHE_ENV = "PERSIAN_SEO_DADMA_REQUIRE_CACHE"
 # Written only after a successful Pipeline() + adapter shim — not a size guess.
 # Versioned so older markers without the shim contract are treated as incomplete.
 CACHE_READY_MARKER = ".persian_seo_os_dadma_pipeline_ok.v2"
 CACHE_READY_MARKER_CONTENT = "pipeline_ok\nv2\n"
 EZAFE_AUDIT_CODE = "fa.text.missing_ezafe_kasreh"
+# Customer-facing audit stays off until ASSUMPTION-008 closes (labeled eval / authors).
+EZAFE_CUSTOMER_AUDIT_ENABLED = False
 
 # Classic genitive NP: ezafe links کتاب to علی. Process-health smoke only —
 # proves the embedding adapters were remapped; does not certify every call.
@@ -118,6 +121,11 @@ def resolve_dadma_cache_dir(explicit: str | None = None) -> str:
     return str(path)
 
 
+def dadma_require_cache() -> bool:
+    """Production must set PERSIAN_SEO_DADMA_REQUIRE_CACHE=1 (no cold download path)."""
+    return os.environ.get(REQUIRE_CACHE_ENV, "").strip() == "1"
+
+
 def assert_dadma_cache_ready(cache_dir: str) -> None:
     """کش معتبر = پوشه موجود + نشانگر نسخه‌دار بارگذاری موفق.
 
@@ -156,17 +164,39 @@ def map_task_adapters_to_embedding(
     task_name: str,
     embedding_keys: Iterable[str],
 ) -> dict[str, Any]:
-    """کلیدهای adapters.<task> را به adapters.embedding روی انکودر نگاشت می‌کند."""
+    """کلیدهای adapters.<task> را به adapters.embedding روی انکودر نگاشت می‌کند.
+
+    جبران جزئی ممنوع: اگر کلیدی با needle جفت شود ولی مقصد در embedding نباشد → استثنا.
+    """
     emb_key_set = set(embedding_keys)
     needle = f"layer_text_task_adapters.{task_name}."
     replacement = "layer_text_task_adapters.embedding."
     mapped: dict[str, Any] = {}
+    orphan_sources: list[str] = []
+    n_matched = 0
     for name, value in adapters.items():
         if needle not in name:
             continue
+        n_matched += 1
         target = name.replace(needle, replacement, 1)
         if target in emb_key_set:
             mapped[target] = value
+        else:
+            orphan_sources.append(name)
+    if orphan_sources:
+        sample = orphan_sources[:5]
+        raise EzafeBackendUnavailable(
+            "Kasreh adapter shim: partial mapping refused. "
+            f"{len(orphan_sources)} key(s) matched task={task_name!r} but have no "
+            f"embedding destination (matched={n_matched}, transferred={len(mapped)}). "
+            f"Sample sources: {sample!r}."
+        )
+    _LOG.info(
+        "Kasreh adapter map: task=%r matched=%d transferred=%d",
+        task_name,
+        n_matched,
+        len(mapped),
+    )
     return mapped
 
 
@@ -242,7 +272,7 @@ def apply_kasreh_embedding_adapter_shim(pipeline: Any) -> int:
         pipeline._embedding_weights = embedding.state_dict()
 
     _LOG.info(
-        "Applied kasreh embedding adapter shim: task=%r keys=%d path=%s",
+        "Applied kasreh embedding adapter shim: task=%r transferred=%d path=%s",
         task_name,
         len(mapped),
         mdl_path,
@@ -376,9 +406,19 @@ class DadmaEzafeBackend:
         ):
             return DadmaEzafeBackend._pipeline
 
-        marker = dadma_cache_marker_path(cache)
-        if marker.is_file():
+        if dadma_require_cache():
+            # Production: never attempt cold download / bootstrap without marker.
             assert_dadma_cache_ready(cache)
+        else:
+            _LOG.warning(
+                "Cold bootstrap path: %s is not set to '1'. "
+                "Skipping cache readiness assert before Pipeline(). "
+                "Production deployments must set %s=1 and mount a prepared cache "
+                "with %s.",
+                REQUIRE_CACHE_ENV,
+                REQUIRE_CACHE_ENV,
+                CACHE_READY_MARKER,
+            )
 
         try:
             # Prefer submodule import — project convention (same object as
@@ -391,8 +431,7 @@ class DadmaEzafeBackend:
                 "(dadmatools[full]==2.3.6)."
             ) from exc
 
-        # Marker absence = unverified/incomplete. We still attempt one load;
-        # only a successful Pipeline()+shim+smoke writes the marker.
+        # Only a successful Pipeline()+shim+smoke writes the readiness marker.
         pipeline = language.Pipeline("tok,kasreh", cache_dir=cache, gpu=self._gpu)
         apply_kasreh_embedding_adapter_shim(pipeline)
         _smoke_kasreh_pipeline(pipeline)
@@ -456,6 +495,7 @@ def audit_ezafe_kasreh(
     *,
     backend: EzafeBackend | None | object = _UNSET,
     field: str = "body",
+    force: bool = False,
 ) -> list[RtlFinding]:
     """چک آدیت اختیاری کسره اضافه — فقط مسیر آدیت، نه display_form.
 
@@ -469,10 +509,28 @@ def audit_ezafe_kasreh(
       ایراد = RtlFinding با skipped=False؛
       نامعلوم = RtlFinding با skipped=True.
     skipped=True هرگز معادل pass نیست و نباید در quality gate سبز شود.
+
+    تا بسته شدن ASSUMPTION-008 این چک در گزارش مشتری‌رو فعال نیست
+    (EZAFE_CUSTOMER_AUDIT_ENABLED=False). برای تست واحد force=True بده.
     """
     del field  # reserved for parity with audit_rtl_text callers
     if not text or not str(text).strip():
         return []
+
+    if not force and not EZAFE_CUSTOMER_AUDIT_ENABLED:
+        return [
+            RtlFinding(
+                code=EZAFE_AUDIT_CODE,
+                severity="low",
+                message="Ezafe/kasreh customer audit disabled pending ASSUMPTION-008.",
+                skipped=True,
+                skip_reason=(
+                    "ASSUMPTION-008 open: kasreh checkpoint adapters are named 'ner'; "
+                    "accuracy on labeled data is unverified. "
+                    "fa.text.missing_ezafe_kasreh must not appear in customer reports."
+                ),
+            )
+        ]
 
     try:
         marks = detect_ezafe(text, backend=backend)

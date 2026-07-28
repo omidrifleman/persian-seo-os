@@ -175,6 +175,40 @@ class TestEzafeApi(unittest.TestCase):
             assert_dadma_cache_ready(tmp)
             self.assertTrue((Path(tmp) / CACHE_READY_MARKER).is_file())
 
+    def test_require_cache_raises_when_marker_missing(self):
+        import os
+        import tempfile
+
+        from persian_seo_normalizer.ezafe import (
+            REQUIRE_CACHE_ENV,
+            DadmaEzafeBackend,
+            EzafeCacheError,
+        )
+
+        prev = os.environ.get(REQUIRE_CACHE_ENV)
+        prev_cache = os.environ.get("PERSIAN_SEO_DADMA_CACHE")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                os.environ[REQUIRE_CACHE_ENV] = "1"
+                os.environ["PERSIAN_SEO_DADMA_CACHE"] = tmp
+                DadmaEzafeBackend._pipeline = None
+                DadmaEzafeBackend._pipeline_cache_dir = None
+                backend = DadmaEzafeBackend(gpu=False)
+                with self.assertRaises(EzafeCacheError) as ctx:
+                    backend._get_pipeline()
+                self.assertIn("readiness marker", str(ctx.exception).lower())
+        finally:
+            if prev is None:
+                os.environ.pop(REQUIRE_CACHE_ENV, None)
+            else:
+                os.environ[REQUIRE_CACHE_ENV] = prev
+            if prev_cache is None:
+                os.environ.pop("PERSIAN_SEO_DADMA_CACHE", None)
+            else:
+                os.environ["PERSIAN_SEO_DADMA_CACHE"] = prev_cache
+            DadmaEzafeBackend._pipeline = None
+            DadmaEzafeBackend._pipeline_cache_dir = None
+
     def test_adapter_shim_transfers_keys_or_raises(self):
         """Shim must move >0 embedding keys; zero transfer is a hard failure."""
         import tempfile
@@ -203,6 +237,17 @@ class TestEzafeApi(unittest.TestCase):
             adapters, task_name="ner", embedding_keys=emb_keys
         )
         self.assertEqual(len(mapped), 2)
+
+        with self.assertRaises(EzafeBackendUnavailable) as orphan_ctx:
+            map_task_adapters_to_embedding(
+                {
+                    **adapters,
+                    "xlmr.encoder.layer.99.output.layer_text_task_adapters.ner.adapter_up.weight": torch.ones(2),
+                },
+                task_name="ner",
+                embedding_keys=emb_keys,
+            )
+        self.assertIn("partial mapping refused", str(orphan_ctx.exception).lower())
 
         with tempfile.TemporaryDirectory() as tmp:
             mdl = (
@@ -307,6 +352,15 @@ class TestEzafeApi(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertTrue(findings[0].skipped)
         self.assertEqual(findings[0].code, EZAFE_AUDIT_CODE)
+        self.assertIn("ASSUMPTION-008", findings[0].skip_reason or "")
+
+    def test_audit_ezafe_backend_missing_with_force(self):
+        from persian_seo_normalizer import EZAFE_AUDIT_CODE, audit_ezafe_kasreh
+
+        findings = audit_ezafe_kasreh("کتاب علی", backend=None, force=True)
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].skipped)
+        self.assertEqual(findings[0].code, EZAFE_AUDIT_CODE)
         self.assertEqual(findings[0].severity, "low")
         self.assertTrue(findings[0].skip_reason)
 
@@ -321,7 +375,7 @@ class TestEzafeApi(unittest.TestCase):
                     _mark(1, "علی", "O"),
                 ]
 
-        findings = audit_ezafe_kasreh("کتاب علی", backend=_FakeBackend())
+        findings = audit_ezafe_kasreh("کتاب علی", backend=_FakeBackend(), force=True)
         self.assertEqual(len(findings), 1)
         self.assertFalse(findings[0].skipped)
         self.assertEqual(findings[0].code, EZAFE_AUDIT_CODE)
