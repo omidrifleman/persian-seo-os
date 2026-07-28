@@ -8,9 +8,7 @@
     cluster_id = f\"{topic_core_fingerprint}:{intent}\"
 
 که ``topic_core_fingerprint = keyword_fingerprint(\" \".join(topic_core_tokens))``
-و ``topic_core_tokens`` = توکن‌های محتوا منهای فقط نشانگرهای **strippable**
-آتش‌گرفته (و منهای استاپ‌وردهای سئو که ``keyword_content_tokens`` حذف می‌کند).
-نشانگرهای غیرstrippable نیت می‌سازند ولی در هسته می‌مانند.
+و ``topic_core_tokens`` از حذف مشروط نشانگرها به دست می‌آید (ADR-0010).
 """
 from __future__ import annotations
 
@@ -47,70 +45,72 @@ _HEAD_CRITERION_NAMES = (
     "keyword_id_tiebreak",
 )
 
+# پس از حذف نشانگر، اگر فقط این توکن‌ها بمانند هسته موضوعی شمرده نمی‌شود
+# و نشانگرها به هسته برمی‌گردند (مثلاً «فروشگاه اینترنتی»). ADR-0010.
+_INSUFFICIENT_CORE_TOKENS = frozenset({"اینترنتی"})
+
 
 @dataclass(frozen=True)
 class FiredIntentMarker:
-    """نشانگر نیت آتش‌گرفته؛ strippable از روی خود رکورد خوانده می‌شود نه lookup."""
+    """نشانگر نیت آتش‌گرفته با موقعیت شروع در توکن‌های analyze_form."""
 
     surface: str
     intent: SearchIntent
-    strippable: bool
+    token_start: int
 
 
 @dataclass(frozen=True)
 class _MarkerSpec:
     surface: str
     intent: SearchIntent
-    strippable: bool
 
 
 # نشانگرها: مطابقت روی analyze_form با مرز توکن، پویش چپ‌به‌راست + مصرف موقعیت،
-# در هر موقعیت طولانی‌تر اول. strippable=False یعنی نیت می‌سازد ولی از هسته حذف نمی‌شود.
-# منبع: ADR-0010 — نه API بیرونی.
+# در هر موقعیت طولانی‌تر اول. منبع: ADR-0010 — نه API بیرونی.
 _MARKER_SPECS: tuple[_MarkerSpec, ...] = (
-    # transactional — همگی strippable
-    _MarkerSpec("قیمت خرید", "transactional", True),
-    _MarkerSpec("ثبت نام", "transactional", True),
-    _MarkerSpec("ثبت‌نام", "transactional", True),
-    _MarkerSpec("خرید", "transactional", True),
-    _MarkerSpec("سفارش", "transactional", True),
-    _MarkerSpec("دانلود", "transactional", True),
-    _MarkerSpec("دریافت", "transactional", True),
-    _MarkerSpec("رزرو", "transactional", True),
-    _MarkerSpec("پرداخت", "transactional", True),
+    # transactional
+    _MarkerSpec("قیمت خرید", "transactional"),
+    _MarkerSpec("ثبت نام", "transactional"),
+    _MarkerSpec("ثبت‌نام", "transactional"),
+    _MarkerSpec("خرید", "transactional"),
+    _MarkerSpec("سفارش", "transactional"),
+    _MarkerSpec("دانلود", "transactional"),
+    _MarkerSpec("دریافت", "transactional"),
+    _MarkerSpec("رزرو", "transactional"),
+    _MarkerSpec("پرداخت", "transactional"),
     # commercial
-    _MarkerSpec("ارزان ترین", "commercial", True),
-    _MarkerSpec("ارزان‌ترین", "commercial", True),
-    _MarkerSpec("بهترین", "commercial", True),
-    _MarkerSpec("مقایسه", "commercial", True),
-    _MarkerSpec("تخفیف", "commercial", True),
-    _MarkerSpec("قیمت", "commercial", True),
-    _MarkerSpec("ارزان", "commercial", True),
-    _MarkerSpec("گران", "commercial", True),
-    _MarkerSpec("فروشگاه", "commercial", False),
-    _MarkerSpec("نمایندگی", "commercial", False),
-    _MarkerSpec("فروش", "commercial", False),
-    # informational («بررسی» محتوایی است، نه commercial)
-    _MarkerSpec("چگونه", "informational", True),
-    _MarkerSpec("چطور", "informational", True),
-    _MarkerSpec("آموزش", "informational", True),
-    _MarkerSpec("راهنما", "informational", True),
-    _MarkerSpec("معنی", "informational", True),
-    _MarkerSpec("تعریف", "informational", True),
-    _MarkerSpec("تفاوت", "informational", True),
-    _MarkerSpec("فرق", "informational", True),
-    _MarkerSpec("چیست", "informational", True),
-    _MarkerSpec("کیست", "informational", True),
-    _MarkerSpec("چرا", "informational", True),
-    _MarkerSpec("بررسی", "informational", False),
-    _MarkerSpec("نمونه", "informational", False),
-    _MarkerSpec("مثال", "informational", False),
-    # navigational — فقط الگوهای واقعی ورود/ناوبری؛ اسم عام «سایت» نشانگر نیست
-    _MarkerSpec("ورود به سایت", "navigational", True),
-    _MarkerSpec("سایت رسمی", "navigational", True),
-    _MarkerSpec("پنل کاربری", "navigational", True),
-    _MarkerSpec("ورود", "navigational", True),
-    _MarkerSpec("لاگین", "navigational", True),
+    _MarkerSpec("ارزان ترین", "commercial"),
+    _MarkerSpec("ارزان‌ترین", "commercial"),
+    _MarkerSpec("بهترین", "commercial"),
+    _MarkerSpec("مقایسه", "commercial"),
+    _MarkerSpec("تخفیف", "commercial"),
+    _MarkerSpec("قیمت", "commercial"),
+    _MarkerSpec("ارزان", "commercial"),
+    _MarkerSpec("گران", "commercial"),
+    _MarkerSpec("فروشگاه", "commercial"),
+    _MarkerSpec("نمایندگی", "commercial"),
+    _MarkerSpec("فروش", "commercial"),
+    # informational
+    _MarkerSpec("چگونه", "informational"),
+    _MarkerSpec("چطور", "informational"),
+    _MarkerSpec("آموزش", "informational"),
+    _MarkerSpec("راهنما", "informational"),
+    _MarkerSpec("معنی", "informational"),
+    _MarkerSpec("تعریف", "informational"),
+    _MarkerSpec("تفاوت", "informational"),
+    _MarkerSpec("فرق", "informational"),
+    _MarkerSpec("چیست", "informational"),
+    _MarkerSpec("کیست", "informational"),
+    _MarkerSpec("چرا", "informational"),
+    _MarkerSpec("بررسی", "informational"),
+    _MarkerSpec("نمونه", "informational"),
+    _MarkerSpec("مثال", "informational"),
+    # navigational — فقط الگوی واقعی ورود/ناوبری
+    _MarkerSpec("ورود به سایت", "navigational"),
+    _MarkerSpec("سایت رسمی", "navigational"),
+    _MarkerSpec("پنل کاربری", "navigational"),
+    _MarkerSpec("ورود", "navigational"),
+    _MarkerSpec("لاگین", "navigational"),
 )
 
 
@@ -167,38 +167,37 @@ class ClusterResult:
 
 def _build_marker_catalog(
     specs: tuple[_MarkerSpec, ...],
-) -> list[tuple[str, SearchIntent, tuple[str, ...], bool]]:
-    """(surface, intent, analyzed_tokens, strippable) sorted longest-first.
+) -> list[tuple[str, SearchIntent, tuple[str, ...]]]:
+    """(surface, intent, analyzed_tokens) sorted longest-first.
 
-    Duplicate analyzed forms with identical intent+strippable collapse to one row.
-    Conflicting intent/strippable for the same tokens raises ValueError.
+    Duplicate analyzed forms with identical intent collapse to one row.
+    Conflicting intent for the same tokens raises ValueError.
     """
-    rows: list[tuple[str, SearchIntent, tuple[str, ...], bool]] = []
+    rows: list[tuple[str, SearchIntent, tuple[str, ...]]] = []
     for spec in specs:
         toks = tuple(analyze_form(spec.surface).split())
         if toks:
-            rows.append((spec.surface, spec.intent, toks, spec.strippable))
+            rows.append((spec.surface, spec.intent, toks))
     rows.sort(key=lambda r: (-len(r[2]), -len(r[0]), r[0]))
-    deduped: list[tuple[str, SearchIntent, tuple[str, ...], bool]] = []
-    seen: dict[tuple[str, ...], tuple[SearchIntent, bool, str]] = {}
-    for surface, intent, toks, strippable in rows:
+    deduped: list[tuple[str, SearchIntent, tuple[str, ...]]] = []
+    seen: dict[tuple[str, ...], tuple[SearchIntent, str]] = {}
+    for surface, intent, toks in rows:
         prev = seen.get(toks)
         if prev is not None:
-            prev_intent, prev_strip, prev_surface = prev
-            if prev_intent != intent or prev_strip != strippable:
+            prev_intent, prev_surface = prev
+            if prev_intent != intent:
                 raise ValueError(
                     "marker catalog conflict: identical analyze tokens "
-                    f"{toks!r} with differing intent/strippable "
-                    f"({prev_surface!r}/{prev_intent}/{prev_strip} vs "
-                    f"{surface!r}/{intent}/{strippable})"
+                    f"{toks!r} with differing intent "
+                    f"({prev_surface!r}/{prev_intent} vs {surface!r}/{intent})"
                 )
             continue
-        seen[toks] = (intent, strippable, surface)
-        deduped.append((surface, intent, toks, strippable))
+        seen[toks] = (intent, surface)
+        deduped.append((surface, intent, toks))
     return deduped
 
 
-def _marker_catalog() -> list[tuple[str, SearchIntent, tuple[str, ...], bool]]:
+def _marker_catalog() -> list[tuple[str, SearchIntent, tuple[str, ...]]]:
     return _build_marker_catalog(_MARKER_SPECS)
 
 
@@ -217,7 +216,7 @@ def _find_intent_markers(analyzed: str) -> list[FiredIntentMarker]:
             i += 1
             continue
         matched = False
-        for surface, intent, mt, strippable in _MARKER_CATALOG:
+        for surface, intent, mt in _MARKER_CATALOG:
             n = len(mt)
             end = i + n
             if end > n_tok:
@@ -227,7 +226,7 @@ def _find_intent_markers(analyzed: str) -> list[FiredIntentMarker]:
             if tuple(tokens[i:end]) == mt:
                 fired.append(
                     FiredIntentMarker(
-                        surface=surface, intent=intent, strippable=strippable
+                        surface=surface, intent=intent, token_start=i
                     )
                 )
                 for j in range(i, end):
@@ -260,22 +259,54 @@ def detect_search_intent(text: str) -> tuple[
         return categories[0], fired, tuple(reason_codes), ()
 
     reason_codes.append("multiple_intent_categories")
+
+    info_starts = [m.token_start for m in fired if m.intent == "informational"]
+    trans_starts = [m.token_start for m in fired if m.intent == "transactional"]
+    if (
+        info_starts
+        and trans_starts
+        and min(info_starts) < min(trans_starts)
+    ):
+        reason_codes.append("informational_precedes_transactional")
+        return "informational", fired, tuple(reason_codes), categories
+
     chosen = categories[0]
     return chosen, fired, tuple(reason_codes), categories
+
+
+def _strip_marker_tokens(
+    content: list[str], fired_markers: tuple[FiredIntentMarker, ...]
+) -> list[str]:
+    remaining = list(content)
+    for marker in fired_markers:
+        for tok in keyword_content_tokens(marker.surface):
+            if tok in remaining:
+                remaining.remove(tok)
+    return remaining
+
+
+def _core_is_usable(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    return not all(t in _INSUFFICIENT_CORE_TOKENS for t in tokens)
 
 
 def topic_core_tokens_for(
     text: str, fired_markers: tuple[FiredIntentMarker, ...]
 ) -> list[str]:
-    """Content tokens minus tokens of *strippable* fired markers only."""
-    remaining = list(keyword_content_tokens(text))
-    for marker in fired_markers:
-        if not marker.strippable:
-            continue
-        for tok in keyword_content_tokens(marker.surface):
-            if tok in remaining:
-                remaining.remove(tok)
-    return remaining
+    """حذف مشروط نشانگرها از توکن‌های محتوا.
+
+    همیشه حذف کن؛ اگر باقی‌مانده خالی بود → [] (caller: only_intent_markers).
+    اگر باقی‌مانده فقط توکن‌های ناکافی بود → کل محتوا را هسته بگیر
+    (نشانگرها برمی‌گردند؛ مثلاً فروشگاه + اینترنتی).
+    """
+    content = keyword_content_tokens(text)
+    stripped = _strip_marker_tokens(content, fired_markers)
+    if _core_is_usable(stripped):
+        return stripped
+    if not stripped:
+        return []
+    return list(content)
 
 
 def make_cluster_id(topic_core_fingerprint: str, intent: SearchIntent) -> str:
@@ -290,7 +321,6 @@ def _member_rank_key(rec: KeywordRecord) -> tuple:
         demand_val = -(10**18)
     else:
         demand_val = rec.search_demand if rec.search_demand is not None else -(10**18)
-    # Criterion 4: analyze_form collapses repeated spaces — whitespace noise is not a signal.
     return (
         -status_rank,
         -demand_val,

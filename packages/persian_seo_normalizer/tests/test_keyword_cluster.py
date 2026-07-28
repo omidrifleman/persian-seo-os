@@ -96,9 +96,10 @@ class OverlappingMarkersTest(unittest.TestCase):
         self.assertEqual(set(_surfaces(markers)), {"خرید", "بهترین"})
         self.assertIn("multiple_intent_categories", codes)
         self.assertEqual(competing, ("transactional", "commercial"))
+        self.assertNotIn("informational_precedes_transactional", codes)
 
 
-class StrippableMarkersTest(unittest.TestCase):
+class ConditionalStripTest(unittest.TestCase):
     def test_tarahi_site_keeps_site_in_core(self) -> None:
         result = cluster_keywords(
             [
@@ -118,8 +119,6 @@ class StrippableMarkersTest(unittest.TestCase):
             by_id["s"].topic_core_fingerprint,
             by_id["a"].topic_core_fingerprint,
         )
-        self.assertNotEqual(by_id["s"].intent, "navigational")
-        self.assertNotEqual(by_id["a"].intent, "navigational")
         self.assertEqual(by_id["s"].intent, "unknown")
         self.assertEqual(by_id["a"].intent, "unknown")
 
@@ -129,7 +128,6 @@ class StrippableMarkersTest(unittest.TestCase):
         rec = result.clusters[0].members[0]
         self.assertEqual(rec.intent, "navigational")
         self.assertEqual(tuple(rec.topic_core_tokens), ("ایرانسل",))
-        self.assertTrue(all(m.strippable for m in rec.intent_markers))
         self.assertEqual(_surfaces(rec.intent_markers), ("سایت رسمی",))
 
     def test_amozesh_telegram_is_informational(self) -> None:
@@ -139,11 +137,75 @@ class StrippableMarkersTest(unittest.TestCase):
         self.assertIn("تلگرام", rec.topic_core_tokens)
         self.assertNotIn("آموزش", rec.topic_core_tokens)
 
-    def test_forushgah_stays_in_core(self) -> None:
+    def test_forushgah_laptop_joins_commercial_laptop_core(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput("a", "قیمت لپ تاپ"),
+                KeywordInput("b", "فروشگاه لپ تاپ"),
+            ]
+        )
+        self.assertEqual(len(result.clusters), 1)
+        cl = result.clusters[0]
+        self.assertEqual(cl.intent, "commercial")
+        self.assertEqual(cl.topic_core_fingerprint, keyword_fingerprint("لپ تاپ"))
+        by_id = {m.keyword_id: m for m in cl.members}
+        self.assertEqual(tuple(by_id["b"].topic_core_tokens), ("لپ", "تاپ"))
+
+    def test_namayandegi_keeps_brand_core(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput("a", "لپ تاپ ایسوس"),
+                KeywordInput("b", "نمایندگی لپ تاپ ایسوس"),
+            ]
+        )
+        self.assertEqual(len(result.clusters), 2)  # unknown vs commercial
+        cores = {
+            m.keyword_id: m.topic_core_tokens
+            for cl in result.clusters
+            for m in cl.members
+        }
+        self.assertEqual(cores["a"], ("لپ", "تاپ", "ایسوس"))
+        self.assertEqual(cores["b"], ("لپ", "تاپ", "ایسوس"))
+
+    def test_barrasi_strips_into_gaming_core(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput("a", "لپ تاپ گیمینگ"),
+                KeywordInput("b", "بررسی لپ تاپ گیمینگ"),
+            ]
+        )
+        # unknown vs informational, same topic core fingerprint
+        fps = {cl.topic_core_fingerprint for cl in result.clusters}
+        self.assertEqual(len(fps), 1)
+        by_id = {
+            m.keyword_id: m
+            for cl in result.clusters
+            for m in cl.members
+        }
+        self.assertEqual(tuple(by_id["b"].topic_core_tokens), ("لپ", "تاپ", "گیمینگ"))
+        self.assertEqual(by_id["b"].intent, "informational")
+
+    def test_nemune_tarahi_joins_informational_core(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput("a", "طراحی سایت چیست"),
+                KeywordInput("b", "نمونه طراحی سایت"),
+            ]
+        )
+        self.assertEqual(len(result.clusters), 1)
+        self.assertEqual(result.clusters[0].intent, "informational")
+        by_id = {m.keyword_id: m for m in result.clusters[0].members}
+        self.assertEqual(tuple(by_id["b"].topic_core_tokens), ("طراحی", "سایت"))
+
+    def test_forushgah_internet_keeps_compound_core(self) -> None:
+        # Strip would leave only «اینترنتی» (insufficient) → restore markers into core.
         result = cluster_keywords([KeywordInput("f", "فروشگاه اینترنتی")])
         rec = result.clusters[0].members[0]
-        self.assertIn("فروشگاه", rec.topic_core_tokens)
         self.assertEqual(rec.intent, "commercial")
+        self.assertEqual(
+            tuple(rec.topic_core_tokens),
+            ("فروشگاه", "اینترنتی"),
+        )
 
     def test_kharid_stripped_from_core(self) -> None:
         result = cluster_keywords([KeywordInput("t", "خرید لپ تاپ")])
@@ -156,8 +218,8 @@ class StrippableMarkersTest(unittest.TestCase):
 class CatalogAndHeadTest(unittest.TestCase):
     def test_catalog_dedup_conflict_raises(self) -> None:
         specs = (
-            kc._MarkerSpec("foo", "commercial", True),
-            kc._MarkerSpec("foo", "transactional", True),
+            kc._MarkerSpec("foo", "commercial"),
+            kc._MarkerSpec("foo", "transactional"),
         )
         with self.assertRaises(ValueError) as ctx:
             kc._build_marker_catalog(specs)
@@ -165,15 +227,13 @@ class CatalogAndHeadTest(unittest.TestCase):
 
     def test_catalog_identical_duplicate_ok(self) -> None:
         specs = (
-            kc._MarkerSpec("ارزان ترین", "commercial", True),
-            kc._MarkerSpec("ارزان‌ترین", "commercial", True),
+            kc._MarkerSpec("ارزان ترین", "commercial"),
+            kc._MarkerSpec("ارزان‌ترین", "commercial"),
         )
         catalog = kc._build_marker_catalog(specs)
         self.assertEqual(len(catalog), 1)
 
     def test_head_decided_by_shorter_normalized_surface(self) -> None:
-        # Same demand/status; same content_tokens («را» is an SEO stopword).
-        # analyze_form lengths differ → criterion 4 (shorter_normalized_surface).
         result = cluster_keywords(
             [
                 KeywordInput("long", "خرید لپ تاپ را"),
@@ -191,8 +251,6 @@ class CatalogAndHeadTest(unittest.TestCase):
         self.assertEqual(cl.head_decided_by, "shorter_normalized_surface")
 
     def test_whitespace_noise_falls_to_keyword_id_tiebreak(self) -> None:
-        # Extra U+0020 is not a ranking signal after analyze_form; criteria 1–4 tie
-        # → keyword_id_tiebreak picks lexicographically smaller id ("a").
         result = cluster_keywords(
             [
                 KeywordInput("b", "قیمت\u0020\u0020لپ تاپ"),
@@ -216,8 +274,27 @@ class IntentConflictTest(unittest.TestCase):
         self.assertIn("multiple_intent_categories", codes)
         self.assertEqual(competing[0], "transactional")
         self.assertIn("commercial", competing)
-        self.assertIn("intent_transactional", codes)
-        self.assertIn("intent_commercial", codes)
+
+    def test_informational_precedes_transactional(self) -> None:
+        intent, markers, codes, competing = detect_search_intent("آموزش خرید لپ تاپ")
+        self.assertEqual(intent, "informational")
+        self.assertIn("informational_precedes_transactional", codes)
+        self.assertIn("multiple_intent_categories", codes)
+        self.assertEqual(set(_surfaces(markers)), {"آموزش", "خرید"})
+        starts = {m.surface: m.token_start for m in markers}
+        self.assertLess(starts["آموزش"], starts["خرید"])
+        self.assertIn("informational", competing)
+        self.assertIn("transactional", competing)
+
+    def test_transactional_before_informational_keeps_priority(self) -> None:
+        intent, markers, codes, competing = detect_search_intent(
+            "خرید آموزش برنامه نویسی"
+        )
+        self.assertEqual(intent, "transactional")
+        self.assertIn("multiple_intent_categories", codes)
+        self.assertNotIn("informational_precedes_transactional", codes)
+        starts = {m.surface: m.token_start for m in markers}
+        self.assertLess(starts["خرید"], starts["آموزش"])
 
     def test_latin_single_token_unknown(self) -> None:
         intent, markers, codes, competing = detect_search_intent("laptop")

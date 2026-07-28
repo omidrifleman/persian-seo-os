@@ -46,12 +46,17 @@ def _e(value: object) -> str:
 def render_demo_html(result: ClusterResult, *, input_count: int) -> str:
     """ساخت HTML کامل از ClusterResult — همه متن‌ها از دیتاکلاس‌ها."""
     singleton_n = sum(1 for c in result.clusters if len(c.members) == 1)
+    cluster_n = len(result.clusters)
+    singleton_pct = (
+        f"{(100.0 * singleton_n / cluster_n):.0f}%" if cluster_n else "—"
+    )
     intent_counts = Counter(c.intent for c in result.clusters)
 
     summary_bits = [
         f"<li>ورودی: <strong>{_e(input_count)}</strong></li>",
-        f"<li>خوشه: <strong>{_e(len(result.clusters))}</strong></li>",
-        f"<li>تک‌عضوی: <strong>{_e(singleton_n)}</strong></li>",
+        f"<li>خوشه: <strong>{_e(cluster_n)}</strong></li>",
+        f"<li>تک‌عضوی: <strong>{_e(singleton_n)}</strong> "
+        f"(<strong>{_e(singleton_pct)}</strong>)</li>",
         f"<li>ردشده: <strong>{_e(len(result.skipped))}</strong></li>",
     ]
     dist_items = "".join(
@@ -66,7 +71,7 @@ def render_demo_html(result: ClusterResult, *, input_count: int) -> str:
         rows: list[str] = []
         for m in cl.members:
             markers = ", ".join(
-                f"{_e(fm.surface)} ({_e(fm.intent)}, strippable={_e(fm.strippable)})"
+                f"{_e(fm.surface)} ({_e(fm.intent)}, @{_e(fm.token_start)})"
                 for fm in m.intent_markers
             ) or "—"
             core = " ".join(_e(t) for t in m.topic_core_tokens) or "—"
