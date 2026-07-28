@@ -8,7 +8,6 @@ TOOLS = [
     # domain.verb, readOnly, destructive, needs_approval
     ("keywords.normalize", True, False, False),
     ("keywords.cluster", True, False, False),
-    ("keywords.volume_lookup", True, False, False),
     ("audit.run", True, False, False),
     ("audit.persian_checks", True, False, False),
     ("content.brief", True, False, False),
