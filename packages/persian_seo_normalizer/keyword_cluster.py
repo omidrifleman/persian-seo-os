@@ -39,6 +39,23 @@ _INTENT_PRIORITY: tuple[SearchIntent, ...] = (
 
 _DEMAND_STATUS_RANK = {"known": 2, "estimated": 1, "unknown": 0}
 
+_HEAD_CRITERION_NAMES = (
+    "search_demand_status",
+    "search_demand",
+    "shorter_content_tokens",
+    "shorter_surface",
+    "keyword_id_tiebreak",
+)
+
+
+@dataclass(frozen=True)
+class FiredIntentMarker:
+    """نشانگر نیت آتش‌گرفته؛ strippable از روی خود رکورد خوانده می‌شود نه lookup."""
+
+    surface: str
+    intent: SearchIntent
+    strippable: bool
+
 
 @dataclass(frozen=True)
 class _MarkerSpec:
@@ -88,14 +105,12 @@ _MARKER_SPECS: tuple[_MarkerSpec, ...] = (
     _MarkerSpec("بررسی", "informational", False),
     _MarkerSpec("نمونه", "informational", False),
     _MarkerSpec("مثال", "informational", False),
-    # navigational
+    # navigational — فقط الگوهای واقعی ورود/ناوبری؛ اسم عام «سایت» نشانگر نیست
+    _MarkerSpec("ورود به سایت", "navigational", True),
+    _MarkerSpec("سایت رسمی", "navigational", True),
+    _MarkerSpec("پنل کاربری", "navigational", True),
     _MarkerSpec("ورود", "navigational", True),
-    _MarkerSpec("سایت", "navigational", False),
-    _MarkerSpec("رسمی", "navigational", False),
-    _MarkerSpec("اپلیکیشن", "navigational", False),
-    _MarkerSpec("اپ", "navigational", False),
-    _MarkerSpec("تلگرام", "navigational", False),
-    _MarkerSpec("اینستاگرام", "navigational", False),
+    _MarkerSpec("لاگین", "navigational", True),
 )
 
 
@@ -117,7 +132,7 @@ class KeywordRecord:
     topic_core_tokens: tuple[str, ...]
     topic_core_fingerprint: str
     intent: SearchIntent
-    intent_markers: tuple[str, ...]
+    intent_markers: tuple[FiredIntentMarker, ...]
     intent_reason_codes: tuple[str, ...]
     competing_intent_categories: tuple[SearchIntent, ...]
     search_demand: int | None
@@ -150,39 +165,52 @@ class ClusterResult:
     skipped: tuple[SkippedKeyword, ...]
 
 
-def _marker_catalog() -> list[tuple[str, SearchIntent, tuple[str, ...], bool]]:
+def _build_marker_catalog(
+    specs: tuple[_MarkerSpec, ...],
+) -> list[tuple[str, SearchIntent, tuple[str, ...], bool]]:
     """(surface, intent, analyzed_tokens, strippable) sorted longest-first.
 
-    Duplicate analyzed forms (e.g. «ارزان‌ترین» vs «ارزان ترین») collapse to one row.
+    Duplicate analyzed forms with identical intent+strippable collapse to one row.
+    Conflicting intent/strippable for the same tokens raises ValueError.
     """
     rows: list[tuple[str, SearchIntent, tuple[str, ...], bool]] = []
-    for spec in _MARKER_SPECS:
+    for spec in specs:
         toks = tuple(analyze_form(spec.surface).split())
         if toks:
             rows.append((spec.surface, spec.intent, toks, spec.strippable))
     rows.sort(key=lambda r: (-len(r[2]), -len(r[0]), r[0]))
     deduped: list[tuple[str, SearchIntent, tuple[str, ...], bool]] = []
-    seen_toks: set[tuple[str, ...]] = set()
-    for row in rows:
-        if row[2] in seen_toks:
+    seen: dict[tuple[str, ...], tuple[SearchIntent, bool, str]] = {}
+    for surface, intent, toks, strippable in rows:
+        prev = seen.get(toks)
+        if prev is not None:
+            prev_intent, prev_strip, prev_surface = prev
+            if prev_intent != intent or prev_strip != strippable:
+                raise ValueError(
+                    "marker catalog conflict: identical analyze tokens "
+                    f"{toks!r} with differing intent/strippable "
+                    f"({prev_surface!r}/{prev_intent}/{prev_strip} vs "
+                    f"{surface!r}/{intent}/{strippable})"
+                )
             continue
-        seen_toks.add(row[2])
-        deduped.append(row)
+        seen[toks] = (intent, strippable, surface)
+        deduped.append((surface, intent, toks, strippable))
     return deduped
 
 
+def _marker_catalog() -> list[tuple[str, SearchIntent, tuple[str, ...], bool]]:
+    return _build_marker_catalog(_MARKER_SPECS)
+
+
 _MARKER_CATALOG = _marker_catalog()
-_STRIPPABLE_BY_SURFACE = {s: strip for s, _, _, strip in _MARKER_CATALOG}
 
 
-def _find_intent_markers(
-    analyzed: str,
-) -> list[tuple[str, SearchIntent, bool]]:
+def _find_intent_markers(analyzed: str) -> list[FiredIntentMarker]:
     """Left-to-right greedy match; consume token spans so overlaps cannot re-fire."""
     tokens = analyzed.split()
     n_tok = len(tokens)
     consumed = [False] * n_tok
-    fired: list[tuple[str, SearchIntent, bool]] = []
+    fired: list[FiredIntentMarker] = []
     i = 0
     while i < n_tok:
         if consumed[i]:
@@ -197,7 +225,11 @@ def _find_intent_markers(
             if any(consumed[j] for j in range(i, end)):
                 continue
             if tuple(tokens[i:end]) == mt:
-                fired.append((surface, intent, strippable))
+                fired.append(
+                    FiredIntentMarker(
+                        surface=surface, intent=intent, strippable=strippable
+                    )
+                )
                 for j in range(i, end):
                     consumed[j] = True
                 matched = True
@@ -210,36 +242,37 @@ def _find_intent_markers(
 
 def detect_search_intent(text: str) -> tuple[
     SearchIntent,
-    tuple[str, ...],
+    tuple[FiredIntentMarker, ...],
     tuple[str, ...],
     tuple[SearchIntent, ...],
 ]:
-    """Return intent, markers, reason_codes, competing categories (all fired)."""
+    """Return intent, fired markers, reason_codes, competing categories."""
     analyzed = analyze_form(text)
-    fired = _find_intent_markers(analyzed)
+    fired = tuple(_find_intent_markers(analyzed))
     if not fired:
         return "unknown", (), ("intent_unknown",), ()
 
-    markers = tuple(m for m, _, _ in fired)
-    fired_set = {intent for _, intent, _ in fired}
+    fired_set = {m.intent for m in fired}
     categories = tuple(c for c in _INTENT_PRIORITY if c in fired_set)
     reason_codes: list[str] = [f"intent_{c}" for c in categories]
 
     if len(categories) == 1:
-        return categories[0], markers, tuple(reason_codes), ()
+        return categories[0], fired, tuple(reason_codes), ()
 
     reason_codes.append("multiple_intent_categories")
     chosen = categories[0]
-    return chosen, markers, tuple(reason_codes), categories
+    return chosen, fired, tuple(reason_codes), categories
 
 
-def topic_core_tokens_for(text: str, intent_markers: tuple[str, ...]) -> list[str]:
+def topic_core_tokens_for(
+    text: str, fired_markers: tuple[FiredIntentMarker, ...]
+) -> list[str]:
     """Content tokens minus tokens of *strippable* fired markers only."""
     remaining = list(keyword_content_tokens(text))
-    for surface in intent_markers:
-        if not _STRIPPABLE_BY_SURFACE.get(surface, True):
+    for marker in fired_markers:
+        if not marker.strippable:
             continue
-        for tok in keyword_content_tokens(surface):
+        for tok in keyword_content_tokens(marker.surface):
             if tok in remaining:
                 remaining.remove(tok)
     return remaining
@@ -250,61 +283,38 @@ def make_cluster_id(topic_core_fingerprint: str, intent: SearchIntent) -> str:
     return f"{topic_core_fingerprint}:{intent}"
 
 
-def _head_key_for_max(rec: KeywordRecord) -> tuple:
-    """Higher tuple wins."""
+def _member_rank_key(rec: KeywordRecord) -> tuple:
+    """Ascending sort key: first element is the head."""
     status_rank = _DEMAND_STATUS_RANK[rec.search_demand_status]
     if rec.search_demand_status == "unknown":
         demand_val = -(10**18)
     else:
         demand_val = rec.search_demand if rec.search_demand is not None else -(10**18)
     return (
-        status_rank,
-        demand_val,
-        -len(rec.content_tokens),
-        -len(rec.text.strip()),
+        -status_rank,
+        -demand_val,
+        len(rec.content_tokens),
+        len(rec.text.strip()),
+        rec.keyword_id,
     )
 
 
-def _decided_by_head(head: KeywordRecord, members: list[KeywordRecord]) -> str:
-    others = [m for m in members if m.keyword_id != head.keyword_id]
-    if not others:
-        return "singleton"
-    best_key = None
-    cands: list[KeywordRecord] = []
-    for rec in others:
-        key = _head_key_for_max(rec)
-        if best_key is None or key > best_key:
-            best_key = key
-            cands = [rec]
-        elif key == best_key:
-            cands.append(rec)
-    runner = min(cands, key=lambda r: r.keyword_id)
-    names = (
-        "search_demand_status",
-        "search_demand",
-        "shorter_content_tokens",
-        "shorter_surface",
-    )
-    hk = _head_key_for_max(head)
-    rk = _head_key_for_max(runner)
-    for name, hv, rv in zip(names, hk, rk, strict=True):
-        if hv != rv:
-            return name
-    return "keyword_id_tiebreak"
+def _rank_members(members: list[KeywordRecord]) -> list[KeywordRecord]:
+    return sorted(members, key=_member_rank_key)
 
 
 def _pick_head(members: list[KeywordRecord]) -> tuple[KeywordRecord, str]:
-    best_key = None
-    cands: list[KeywordRecord] = []
-    for rec in members:
-        key = _head_key_for_max(rec)
-        if best_key is None or key > best_key:
-            best_key = key
-            cands = [rec]
-        elif key == best_key:
-            cands.append(rec)
-    head = min(cands, key=lambda r: r.keyword_id)
-    return head, _decided_by_head(head, members)
+    ranked = _rank_members(members)
+    head = ranked[0]
+    if len(ranked) == 1:
+        return head, "singleton"
+    runner = ranked[1]
+    hk = _member_rank_key(head)
+    rk = _member_rank_key(runner)
+    for name, hv, rv in zip(_HEAD_CRITERION_NAMES, hk, rk, strict=True):
+        if hv != rv:
+            return head, name
+    return head, "keyword_id_tiebreak"
 
 
 def _cluster_reason_codes(

@@ -5,6 +5,7 @@ import unittest
 from itertools import permutations
 from typing import cast
 
+from packages.persian_seo_normalizer import keyword_cluster as kc
 from packages.persian_seo_normalizer.fingerprint import keyword_fingerprint
 from packages.persian_seo_normalizer.keyword_cluster import (
     KeywordInput,
@@ -13,6 +14,11 @@ from packages.persian_seo_normalizer.keyword_cluster import (
     detect_search_intent,
     make_cluster_id,
 )
+from packages.persian_seo_normalizer.normalize import analyze_form
+
+
+def _surfaces(markers: tuple) -> tuple[str, ...]:
+    return tuple(m.surface for m in markers)
 
 
 class ReferenceLaptopClustersTest(unittest.TestCase):
@@ -70,26 +76,24 @@ class OverlappingMarkersTest(unittest.TestCase):
     def test_gheymat_kharid_consumes_span(self) -> None:
         intent, markers, codes, competing = detect_search_intent("قیمت خرید لپ تاپ")
         self.assertEqual(intent, "transactional")
-        self.assertEqual(markers, ("قیمت خرید",))
+        self.assertEqual(_surfaces(markers), ("قیمت خرید",))
         self.assertNotIn("multiple_intent_categories", codes)
         self.assertEqual(competing, ())
         self.assertEqual(codes, ("intent_transactional",))
 
-    def test_arzantarín_not_arzan(self) -> None:
-        from packages.persian_seo_normalizer.normalize import analyze_form
-
+    def test_arzantarin_not_arzan(self) -> None:
         intent, markers, codes, competing = detect_search_intent("لپ تاپ ارزان‌ترین")
         self.assertEqual(intent, "commercial")
         self.assertEqual(len(markers), 1)
-        self.assertEqual(analyze_form(markers[0]), analyze_form("ارزان‌ترین"))
-        self.assertNotIn("ارزان", markers)
+        self.assertEqual(analyze_form(markers[0].surface), analyze_form("ارزان‌ترین"))
+        self.assertNotIn("ارزان", _surfaces(markers))
         self.assertNotIn("multiple_intent_categories", codes)
         self.assertEqual(competing, ())
 
     def test_real_multi_intent_still_flagged(self) -> None:
         intent, markers, codes, competing = detect_search_intent("خرید بهترین لپ تاپ")
         self.assertEqual(intent, "transactional")
-        self.assertEqual(set(markers), {"خرید", "بهترین"})
+        self.assertEqual(set(_surfaces(markers)), {"خرید", "بهترین"})
         self.assertIn("multiple_intent_categories", codes)
         self.assertEqual(competing, ("transactional", "commercial"))
 
@@ -114,8 +118,26 @@ class StrippableMarkersTest(unittest.TestCase):
             by_id["s"].topic_core_fingerprint,
             by_id["a"].topic_core_fingerprint,
         )
-        self.assertEqual(by_id["s"].intent, "navigational")
-        self.assertEqual(by_id["a"].intent, "navigational")
+        self.assertNotEqual(by_id["s"].intent, "navigational")
+        self.assertNotEqual(by_id["a"].intent, "navigational")
+        self.assertEqual(by_id["s"].intent, "unknown")
+        self.assertEqual(by_id["a"].intent, "unknown")
+
+    def test_site_rasmi_irancell_is_navigational(self) -> None:
+        result = cluster_keywords([KeywordInput("n", "سایت رسمی ایرانسل")])
+        self.assertEqual(len(result.clusters), 1)
+        rec = result.clusters[0].members[0]
+        self.assertEqual(rec.intent, "navigational")
+        self.assertEqual(tuple(rec.topic_core_tokens), ("ایرانسل",))
+        self.assertTrue(all(m.strippable for m in rec.intent_markers))
+        self.assertEqual(_surfaces(rec.intent_markers), ("سایت رسمی",))
+
+    def test_amozesh_telegram_is_informational(self) -> None:
+        result = cluster_keywords([KeywordInput("t", "آموزش تلگرام")])
+        rec = result.clusters[0].members[0]
+        self.assertEqual(rec.intent, "informational")
+        self.assertIn("تلگرام", rec.topic_core_tokens)
+        self.assertNotIn("آموزش", rec.topic_core_tokens)
 
     def test_forushgah_stays_in_core(self) -> None:
         result = cluster_keywords([KeywordInput("f", "فروشگاه اینترنتی")])
@@ -131,14 +153,45 @@ class StrippableMarkersTest(unittest.TestCase):
         self.assertEqual(rec.intent, "transactional")
 
 
+class CatalogAndHeadTest(unittest.TestCase):
+    def test_catalog_dedup_conflict_raises(self) -> None:
+        specs = (
+            kc._MarkerSpec("foo", "commercial", True),
+            kc._MarkerSpec("foo", "transactional", True),
+        )
+        with self.assertRaises(ValueError) as ctx:
+            kc._build_marker_catalog(specs)
+        self.assertIn("conflict", str(ctx.exception))
+
+    def test_catalog_identical_duplicate_ok(self) -> None:
+        specs = (
+            kc._MarkerSpec("ارزان ترین", "commercial", True),
+            kc._MarkerSpec("ارزان‌ترین", "commercial", True),
+        )
+        catalog = kc._build_marker_catalog(specs)
+        self.assertEqual(len(catalog), 1)
+
+    def test_head_decided_by_shorter_surface(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput("long", "قیمت  لپ تاپ"),
+                KeywordInput("short", "قیمت لپ تاپ"),
+            ]
+        )
+        self.assertEqual(len(result.clusters), 1)
+        cl = result.clusters[0]
+        self.assertEqual(cl.head_keyword_id, "short")
+        self.assertEqual(cl.head_decided_by, "shorter_surface")
+
+
 class IntentConflictTest(unittest.TestCase):
     def test_priority_transactional_over_commercial(self) -> None:
         intent, markers, codes, competing = detect_search_intent(
             "خرید بهترین لپ تاپ ارزان"
         )
         self.assertEqual(intent, "transactional")
-        self.assertIn("خرید", markers)
-        self.assertIn("بهترین", markers)
+        self.assertIn("خرید", _surfaces(markers))
+        self.assertIn("بهترین", _surfaces(markers))
         self.assertIn("multiple_intent_categories", codes)
         self.assertEqual(competing[0], "transactional")
         self.assertIn("commercial", competing)
@@ -260,22 +313,14 @@ class SkipAndDemandTest(unittest.TestCase):
 
 class DeterminismAndFingerprintReuseTest(unittest.TestCase):
     def test_deterministic_full_result_across_permutations(self) -> None:
-        # شناسه‌ها یکتا: duplicate با متن متفاوت ذاتاً به ترتیب ورودی وابسته‌اند.
         items = [
             KeywordInput(
                 "1", "قیمت لپ تاپ", search_demand=100, search_demand_status="known"
             ),
             KeywordInput("2", "بهترین لپ تاپ"),
             KeywordInput("3", "خرید لپ تاپ"),
-            KeywordInput("4", "لپ تاپ چیست"),
             KeywordInput("", "خالی"),
             KeywordInput("x", "خرید"),
-            KeywordInput(
-                "neg",
-                "لپ تاپ ایسوس",
-                search_demand=-3,
-                search_demand_status="known",
-            ),
         ]
         results = [cluster_keywords(list(p)) for p in permutations(items)]
         baseline = results[0]

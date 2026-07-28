@@ -25,6 +25,7 @@ from .ezafe import (
 from .fingerprint import keyword_content_tokens, keyword_fingerprint, same_keyword
 from .keyword_cluster import (
     ClusterResult,
+    FiredIntentMarker,
     KeywordCluster,
     KeywordInput,
     KeywordRecord,
@@ -51,6 +52,7 @@ __all__ = [
     "EzafeBackendUnavailable",
     "EzafeCacheError",
     "EzafeMark",
+    "FiredIntentMarker",
     "KeywordCluster",
     "KeywordInput",
     "KeywordRecord",
