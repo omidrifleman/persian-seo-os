@@ -1,0 +1,11 @@
+# PLACEHOLDER SAMPLES ONLY — verified=false on every row. Human labels required before any accuracy claim.
+{"id": "sample-001", "text": "کتاب علی", "tokens": ["کتاب", "علی"], "ezafe": [1, 0], "note": "placeholder genitive NP; NOT human-verified", "verified": false}
+{"id": "sample-002", "text": "درب خانه", "tokens": ["درب", "خانه"], "ezafe": [1, 0], "note": "placeholder; NOT human-verified", "verified": false}
+{"id": "sample-003", "text": "رنگ ماشین", "tokens": ["رنگ", "ماشین"], "ezafe": [1, 0], "note": "placeholder; NOT human-verified", "verified": false}
+{"id": "sample-004", "text": "دانشگاه تهران", "tokens": ["دانشگاه", "تهران"], "ezafe": [1, 0], "note": "placeholder; NOT human-verified", "verified": false}
+{"id": "sample-005", "text": "پسر همسایه", "tokens": ["پسر", "همسایه"], "ezafe": [1, 0], "note": "placeholder; NOT human-verified", "verified": false}
+{"id": "sample-006", "text": "او رفت", "tokens": ["او", "رفت"], "ezafe": [0, 0], "note": "placeholder no-ezafe; NOT human-verified", "verified": false}
+{"id": "sample-007", "text": "من دیدم", "tokens": ["من", "دیدم"], "ezafe": [0, 0], "note": "placeholder no-ezafe; NOT human-verified", "verified": false}
+{"id": "sample-008", "text": "هوا سرد است", "tokens": ["هوا", "سرد", "است"], "ezafe": [0, 0, 0], "note": "placeholder no-ezafe; NOT human-verified", "verified": false}
+{"id": "sample-009", "text": "گل سرخ", "tokens": ["گل", "سرخ"], "ezafe": [1, 0], "note": "placeholder; NOT human-verified", "verified": false}
+{"id": "sample-010", "text": "مادر کودک", "tokens": ["مادر", "کودک"], "ezafe": [1, 0], "note": "placeholder; NOT human-verified", "verified": false}
