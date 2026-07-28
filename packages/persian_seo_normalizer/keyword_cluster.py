@@ -43,7 +43,7 @@ _HEAD_CRITERION_NAMES = (
     "search_demand_status",
     "search_demand",
     "shorter_content_tokens",
-    "shorter_surface",
+    "shorter_normalized_surface",
     "keyword_id_tiebreak",
 )
 
@@ -290,11 +290,12 @@ def _member_rank_key(rec: KeywordRecord) -> tuple:
         demand_val = -(10**18)
     else:
         demand_val = rec.search_demand if rec.search_demand is not None else -(10**18)
+    # Criterion 4: analyze_form collapses repeated spaces — whitespace noise is not a signal.
     return (
         -status_rank,
         -demand_val,
         len(rec.content_tokens),
-        len(rec.text.strip()),
+        len(analyze_form(rec.text)),
         rec.keyword_id,
     )
 

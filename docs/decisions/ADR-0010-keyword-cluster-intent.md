@@ -74,8 +74,10 @@ lookup شکنندهٔ سطح→strippable با پیش‌فرض بی‌صدا م�
 1. `search_demand_status` (known > estimated > unknown)
 2. `search_demand` وقتی status ≠ unknown — **صفر با `known` معتبر است**
 3. کوتاه‌تر بودن توکن‌های محتوا
-4. کوتاه‌تر بودن سطح متن
-5. `keyword_id` lexicographic
+4. کوتاه‌تر بودن سطح **نرمال‌شده** (`len(analyze_form(text))`) —
+   فاصلهٔ تکراری و نویز فاصله سیگنال نیست؛ دو متنی که فقط در whitespace
+   فرق دارند در این معیار مساوی‌اند و تصمیم به `keyword_id_tiebreak` می‌افتد
+5. `keyword_id` lexicographic (`keyword_id_tiebreak`)
 
 ### محدودیت صریح
 در نبود دادهٔ حجم (`unknown` برای همه)، معیارهای ۱–۲ بی‌اثر می‌شوند و

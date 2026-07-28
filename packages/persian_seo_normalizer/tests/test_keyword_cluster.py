@@ -171,17 +171,38 @@ class CatalogAndHeadTest(unittest.TestCase):
         catalog = kc._build_marker_catalog(specs)
         self.assertEqual(len(catalog), 1)
 
-    def test_head_decided_by_shorter_surface(self) -> None:
+    def test_head_decided_by_shorter_normalized_surface(self) -> None:
+        # Same demand/status; same content_tokens («را» is an SEO stopword).
+        # analyze_form lengths differ → criterion 4 (shorter_normalized_surface).
         result = cluster_keywords(
             [
-                KeywordInput("long", "قیمت  لپ تاپ"),
-                KeywordInput("short", "قیمت لپ تاپ"),
+                KeywordInput("long", "خرید لپ تاپ را"),
+                KeywordInput("short", "خرید لپ تاپ"),
             ]
         )
         self.assertEqual(len(result.clusters), 1)
         cl = result.clusters[0]
+        self.assertEqual(
+            {m.keyword_id for m in cl.members},
+            {"long", "short"},
+        )
+        self.assertEqual(cl.members[0].content_tokens, cl.members[1].content_tokens)
         self.assertEqual(cl.head_keyword_id, "short")
-        self.assertEqual(cl.head_decided_by, "shorter_surface")
+        self.assertEqual(cl.head_decided_by, "shorter_normalized_surface")
+
+    def test_whitespace_noise_falls_to_keyword_id_tiebreak(self) -> None:
+        # Extra U+0020 is not a ranking signal after analyze_form; criteria 1–4 tie
+        # → keyword_id_tiebreak picks lexicographically smaller id ("a").
+        result = cluster_keywords(
+            [
+                KeywordInput("b", "قیمت\u0020\u0020لپ تاپ"),
+                KeywordInput("a", "قیمت\u0020لپ تاپ"),
+            ]
+        )
+        self.assertEqual(len(result.clusters), 1)
+        cl = result.clusters[0]
+        self.assertEqual(cl.head_keyword_id, "a")
+        self.assertEqual(cl.head_decided_by, "keyword_id_tiebreak")
 
 
 class IntentConflictTest(unittest.TestCase):
