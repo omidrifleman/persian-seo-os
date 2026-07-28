@@ -8,8 +8,9 @@
     cluster_id = f\"{topic_core_fingerprint}:{intent}\"
 
 که ``topic_core_fingerprint = keyword_fingerprint(\" \".join(topic_core_tokens))``
-و ``topic_core_tokens`` = توکن‌های محتوا منهای نشانگرهای نیت آتش‌گرفته
-(و منهای استاپ‌وردهای سئو که ``keyword_content_tokens`` حذف می‌کند).
+و ``topic_core_tokens`` = توکن‌های محتوا منهای فقط نشانگرهای **strippable**
+آتش‌گرفته (و منهای استاپ‌وردهای سئو که ``keyword_content_tokens`` حذف می‌کند).
+نشانگرهای غیرstrippable نیت می‌سازند ولی در هسته می‌مانند.
 """
 from __future__ import annotations
 
@@ -38,59 +39,64 @@ _INTENT_PRIORITY: tuple[SearchIntent, ...] = (
 
 _DEMAND_STATUS_RANK = {"known": 2, "estimated": 1, "unknown": 0}
 
-# نشانگرها به صورت عبارت؛ مطابقت روی analyze_form با مرز توکن، طولانی‌تر اول.
-# منبع: فهرست مهندسی این ماژول (ADR-0010) — نه API بیرونی.
-_INTENT_MARKERS: dict[SearchIntent, tuple[str, ...]] = {
-    "transactional": (
-        "قیمت خرید",
-        "ثبت نام",
-        "ثبت‌نام",
-        "خرید",
-        "سفارش",
-        "دانلود",
-        "دریافت",
-        "رزرو",
-        "پرداخت",
-    ),
-    "commercial": (
-        "ارزان ترین",
-        "ارزان‌ترین",
-        "بهترین",
-        "مقایسه",
-        "بررسی",
-        "تخفیف",
-        "فروشگاه",
-        "نمایندگی",
-        "قیمت",
-        "ارزان",
-        "گران",
-        "فروش",
-    ),
-    "informational": (
-        "چگونه",
-        "چطور",
-        "آموزش",
-        "راهنما",
-        "معنی",
-        "تعریف",
-        "نمونه",
-        "مثال",
-        "تفاوت",
-        "فرق",
-        "چیست",
-        "کیست",
-        "چرا",
-    ),
-    "navigational": (
-        "سایت",
-        "ورود",
-        "رسمی",
-        "اپلیکیشن",
-        "اپ",
-        "تلگرام",
-        "اینستاگرام",
-    ),
-}
+
+@dataclass(frozen=True)
+class _MarkerSpec:
+    surface: str
+    intent: SearchIntent
+    strippable: bool
+
+
+# نشانگرها: مطابقت روی analyze_form با مرز توکن، پویش چپ‌به‌راست + مصرف موقعیت،
+# در هر موقعیت طولانی‌تر اول. strippable=False یعنی نیت می‌سازد ولی از هسته حذف نمی‌شود.
+# منبع: ADR-0010 — نه API بیرونی.
+_MARKER_SPECS: tuple[_MarkerSpec, ...] = (
+    # transactional — همگی strippable
+    _MarkerSpec("قیمت خرید", "transactional", True),
+    _MarkerSpec("ثبت نام", "transactional", True),
+    _MarkerSpec("ثبت‌نام", "transactional", True),
+    _MarkerSpec("خرید", "transactional", True),
+    _MarkerSpec("سفارش", "transactional", True),
+    _MarkerSpec("دانلود", "transactional", True),
+    _MarkerSpec("دریافت", "transactional", True),
+    _MarkerSpec("رزرو", "transactional", True),
+    _MarkerSpec("پرداخت", "transactional", True),
+    # commercial
+    _MarkerSpec("ارزان ترین", "commercial", True),
+    _MarkerSpec("ارزان‌ترین", "commercial", True),
+    _MarkerSpec("بهترین", "commercial", True),
+    _MarkerSpec("مقایسه", "commercial", True),
+    _MarkerSpec("تخفیف", "commercial", True),
+    _MarkerSpec("قیمت", "commercial", True),
+    _MarkerSpec("ارزان", "commercial", True),
+    _MarkerSpec("گران", "commercial", True),
+    _MarkerSpec("فروشگاه", "commercial", False),
+    _MarkerSpec("نمایندگی", "commercial", False),
+    _MarkerSpec("فروش", "commercial", False),
+    # informational («بررسی» محتوایی است، نه commercial)
+    _MarkerSpec("چگونه", "informational", True),
+    _MarkerSpec("چطور", "informational", True),
+    _MarkerSpec("آموزش", "informational", True),
+    _MarkerSpec("راهنما", "informational", True),
+    _MarkerSpec("معنی", "informational", True),
+    _MarkerSpec("تعریف", "informational", True),
+    _MarkerSpec("تفاوت", "informational", True),
+    _MarkerSpec("فرق", "informational", True),
+    _MarkerSpec("چیست", "informational", True),
+    _MarkerSpec("کیست", "informational", True),
+    _MarkerSpec("چرا", "informational", True),
+    _MarkerSpec("بررسی", "informational", False),
+    _MarkerSpec("نمونه", "informational", False),
+    _MarkerSpec("مثال", "informational", False),
+    # navigational
+    _MarkerSpec("ورود", "navigational", True),
+    _MarkerSpec("سایت", "navigational", False),
+    _MarkerSpec("رسمی", "navigational", False),
+    _MarkerSpec("اپلیکیشن", "navigational", False),
+    _MarkerSpec("اپ", "navigational", False),
+    _MarkerSpec("تلگرام", "navigational", False),
+    _MarkerSpec("اینستاگرام", "navigational", False),
+)
 
 
 @dataclass(frozen=True)
@@ -144,34 +150,61 @@ class ClusterResult:
     skipped: tuple[SkippedKeyword, ...]
 
 
-def _marker_catalog() -> list[tuple[str, SearchIntent, tuple[str, ...]]]:
-    """(surface, intent, analyzed_tokens) sorted longest-first."""
-    rows: list[tuple[str, SearchIntent, tuple[str, ...]]] = []
-    for intent, markers in _INTENT_MARKERS.items():
-        for surface in markers:
-            toks = tuple(analyze_form(surface).split())
-            if toks:
-                rows.append((surface, intent, toks))
+def _marker_catalog() -> list[tuple[str, SearchIntent, tuple[str, ...], bool]]:
+    """(surface, intent, analyzed_tokens, strippable) sorted longest-first.
+
+    Duplicate analyzed forms (e.g. «ارزان‌ترین» vs «ارزان ترین») collapse to one row.
+    """
+    rows: list[tuple[str, SearchIntent, tuple[str, ...], bool]] = []
+    for spec in _MARKER_SPECS:
+        toks = tuple(analyze_form(spec.surface).split())
+        if toks:
+            rows.append((spec.surface, spec.intent, toks, spec.strippable))
     rows.sort(key=lambda r: (-len(r[2]), -len(r[0]), r[0]))
-    return rows
+    deduped: list[tuple[str, SearchIntent, tuple[str, ...], bool]] = []
+    seen_toks: set[tuple[str, ...]] = set()
+    for row in rows:
+        if row[2] in seen_toks:
+            continue
+        seen_toks.add(row[2])
+        deduped.append(row)
+    return deduped
 
 
 _MARKER_CATALOG = _marker_catalog()
+_STRIPPABLE_BY_SURFACE = {s: strip for s, _, _, strip in _MARKER_CATALOG}
 
 
-def _find_intent_markers(analyzed: str) -> list[tuple[str, SearchIntent]]:
+def _find_intent_markers(
+    analyzed: str,
+) -> list[tuple[str, SearchIntent, bool]]:
+    """Left-to-right greedy match; consume token spans so overlaps cannot re-fire."""
     tokens = analyzed.split()
-    fired: list[tuple[str, SearchIntent]] = []
-    seen_surfaces: set[str] = set()
-    for surface, intent, mt in _MARKER_CATALOG:
-        if surface in seen_surfaces:
+    n_tok = len(tokens)
+    consumed = [False] * n_tok
+    fired: list[tuple[str, SearchIntent, bool]] = []
+    i = 0
+    while i < n_tok:
+        if consumed[i]:
+            i += 1
             continue
-        n = len(mt)
-        for i in range(0, len(tokens) - n + 1):
-            if tuple(tokens[i : i + n]) == mt:
-                fired.append((surface, intent))
-                seen_surfaces.add(surface)
+        matched = False
+        for surface, intent, mt, strippable in _MARKER_CATALOG:
+            n = len(mt)
+            end = i + n
+            if end > n_tok:
+                continue
+            if any(consumed[j] for j in range(i, end)):
+                continue
+            if tuple(tokens[i:end]) == mt:
+                fired.append((surface, intent, strippable))
+                for j in range(i, end):
+                    consumed[j] = True
+                matched = True
+                i = end
                 break
+        if not matched:
+            i += 1
     return fired
 
 
@@ -187,8 +220,8 @@ def detect_search_intent(text: str) -> tuple[
     if not fired:
         return "unknown", (), ("intent_unknown",), ()
 
-    markers = tuple(m for m, _ in fired)
-    fired_set = {intent for _, intent in fired}
+    markers = tuple(m for m, _, _ in fired)
+    fired_set = {intent for _, intent, _ in fired}
     categories = tuple(c for c in _INTENT_PRIORITY if c in fired_set)
     reason_codes: list[str] = [f"intent_{c}" for c in categories]
 
@@ -196,14 +229,16 @@ def detect_search_intent(text: str) -> tuple[
         return categories[0], markers, tuple(reason_codes), ()
 
     reason_codes.append("multiple_intent_categories")
-    chosen = categories[0]  # already priority-ordered
+    chosen = categories[0]
     return chosen, markers, tuple(reason_codes), categories
 
 
 def topic_core_tokens_for(text: str, intent_markers: tuple[str, ...]) -> list[str]:
-    """Content tokens minus tokens belonging to fired intent markers."""
+    """Content tokens minus tokens of *strippable* fired markers only."""
     remaining = list(keyword_content_tokens(text))
     for surface in intent_markers:
+        if not _STRIPPABLE_BY_SURFACE.get(surface, True):
+            continue
         for tok in keyword_content_tokens(surface):
             if tok in remaining:
                 remaining.remove(tok)
@@ -272,6 +307,22 @@ def _pick_head(members: list[KeywordRecord]) -> tuple[KeywordRecord, str]:
     return head, _decided_by_head(head, members)
 
 
+def _cluster_reason_codes(
+    ordered: list[KeywordRecord], *, singleton: bool
+) -> tuple[str, ...]:
+    """Union of all members' intent_reason_codes (head-first), then cluster-only flags."""
+    seen: set[str] = set()
+    codes: list[str] = []
+    for rec in ordered:
+        for c in rec.intent_reason_codes:
+            if c not in seen:
+                seen.add(c)
+                codes.append(c)
+    if singleton:
+        codes.append("singleton_cluster")
+    return tuple(codes)
+
+
 def cluster_keywords(
     keywords: list[KeywordInput],
     *,
@@ -330,7 +381,7 @@ def cluster_keywords(
                 SkippedKeyword(
                     keyword_id=kid,
                     text=text,
-                    reason_code="invalid_search_demand",
+                    reason_code="invalid_demand_status",
                     reason_fa=f"وضعیت حجم نامعتبر: {status!r}.",
                 )
             )
@@ -351,7 +402,7 @@ def cluster_keywords(
                     SkippedKeyword(
                         keyword_id=kid,
                         text=text,
-                        reason_code="invalid_search_demand",
+                        reason_code="missing_search_demand",
                         reason_fa="status شناخته‌شده/تخمینی نیاز به search_demand دارد.",
                     )
                 )
@@ -361,7 +412,7 @@ def cluster_keywords(
                     SkippedKeyword(
                         keyword_id=kid,
                         text=text,
-                        reason_code="invalid_search_demand",
+                        reason_code="negative_search_demand",
                         reason_fa="search_demand منفی مجاز نیست (۰ با known معتبر است).",
                     )
                 )
@@ -426,15 +477,6 @@ def cluster_keywords(
             [m for m in members if m.keyword_id != head.keyword_id],
             key=lambda m: m.keyword_id,
         )
-        codes: list[str] = list(head.intent_reason_codes)
-        if len(members) == 1:
-            codes.append("singleton_cluster")
-        seen_c: set[str] = set()
-        uniq_codes: list[str] = []
-        for c in codes:
-            if c not in seen_c:
-                seen_c.add(c)
-                uniq_codes.append(c)
         clusters.append(
             KeywordCluster(
                 cluster_id=make_cluster_id(core_fp, intent),
@@ -444,8 +486,18 @@ def cluster_keywords(
                 head_text=head.text,
                 members=tuple(ordered),
                 head_decided_by=decided,
-                reason_codes=tuple(uniq_codes),
+                reason_codes=_cluster_reason_codes(
+                    ordered, singleton=len(members) == 1
+                ),
             )
         )
 
-    return ClusterResult(clusters=tuple(clusters), skipped=tuple(skipped))
+    return ClusterResult(
+        clusters=tuple(clusters),
+        skipped=tuple(
+            sorted(
+                skipped,
+                key=lambda s: (s.keyword_id, s.reason_code, s.text),
+            )
+        ),
+    )

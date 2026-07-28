@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import unittest
+from itertools import permutations
+from typing import cast
 
 from packages.persian_seo_normalizer.fingerprint import keyword_fingerprint
 from packages.persian_seo_normalizer.keyword_cluster import (
     KeywordInput,
+    SearchDemandStatus,
     cluster_keywords,
     detect_search_intent,
     make_cluster_id,
@@ -61,6 +64,71 @@ class ReferenceLaptopClustersTest(unittest.TestCase):
             by_intent["transactional"].cluster_id,
             make_cluster_id(laptop_core, "transactional"),
         )
+
+
+class OverlappingMarkersTest(unittest.TestCase):
+    def test_gheymat_kharid_consumes_span(self) -> None:
+        intent, markers, codes, competing = detect_search_intent("قیمت خرید لپ تاپ")
+        self.assertEqual(intent, "transactional")
+        self.assertEqual(markers, ("قیمت خرید",))
+        self.assertNotIn("multiple_intent_categories", codes)
+        self.assertEqual(competing, ())
+        self.assertEqual(codes, ("intent_transactional",))
+
+    def test_arzantarín_not_arzan(self) -> None:
+        from packages.persian_seo_normalizer.normalize import analyze_form
+
+        intent, markers, codes, competing = detect_search_intent("لپ تاپ ارزان‌ترین")
+        self.assertEqual(intent, "commercial")
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(analyze_form(markers[0]), analyze_form("ارزان‌ترین"))
+        self.assertNotIn("ارزان", markers)
+        self.assertNotIn("multiple_intent_categories", codes)
+        self.assertEqual(competing, ())
+
+    def test_real_multi_intent_still_flagged(self) -> None:
+        intent, markers, codes, competing = detect_search_intent("خرید بهترین لپ تاپ")
+        self.assertEqual(intent, "transactional")
+        self.assertEqual(set(markers), {"خرید", "بهترین"})
+        self.assertIn("multiple_intent_categories", codes)
+        self.assertEqual(competing, ("transactional", "commercial"))
+
+
+class StrippableMarkersTest(unittest.TestCase):
+    def test_tarahi_site_keeps_site_in_core(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput("s", "طراحی سایت"),
+                KeywordInput("a", "طراحی اپلیکیشن"),
+            ]
+        )
+        self.assertEqual(len(result.clusters), 2)
+        by_id = {
+            m.keyword_id: m
+            for cl in result.clusters
+            for m in cl.members
+        }
+        self.assertIn("سایت", by_id["s"].topic_core_tokens)
+        self.assertIn("اپلیکیشن", by_id["a"].topic_core_tokens)
+        self.assertNotEqual(
+            by_id["s"].topic_core_fingerprint,
+            by_id["a"].topic_core_fingerprint,
+        )
+        self.assertEqual(by_id["s"].intent, "navigational")
+        self.assertEqual(by_id["a"].intent, "navigational")
+
+    def test_forushgah_stays_in_core(self) -> None:
+        result = cluster_keywords([KeywordInput("f", "فروشگاه اینترنتی")])
+        rec = result.clusters[0].members[0]
+        self.assertIn("فروشگاه", rec.topic_core_tokens)
+        self.assertEqual(rec.intent, "commercial")
+
+    def test_kharid_stripped_from_core(self) -> None:
+        result = cluster_keywords([KeywordInput("t", "خرید لپ تاپ")])
+        rec = result.clusters[0].members[0]
+        self.assertNotIn("خرید", rec.topic_core_tokens)
+        self.assertEqual(tuple(rec.topic_core_tokens), ("لپ", "تاپ"))
+        self.assertEqual(rec.intent, "transactional")
 
 
 class IntentConflictTest(unittest.TestCase):
@@ -136,6 +204,41 @@ class SkipAndDemandTest(unittest.TestCase):
         )
         self.assertEqual(result.skipped[0].reason_code, "demand_status_conflict")
 
+    def test_invalid_demand_status(self) -> None:
+        item = KeywordInput(
+            "z",
+            "لپ تاپ ایسوس",
+            search_demand_status=cast(SearchDemandStatus, "bogus"),
+        )
+        result = cluster_keywords([item])
+        self.assertEqual(result.skipped[0].reason_code, "invalid_demand_status")
+
+    def test_missing_search_demand(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput(
+                    "z",
+                    "لپ تاپ ایسوس",
+                    search_demand=None,
+                    search_demand_status="known",
+                )
+            ]
+        )
+        self.assertEqual(result.skipped[0].reason_code, "missing_search_demand")
+
+    def test_negative_search_demand(self) -> None:
+        result = cluster_keywords(
+            [
+                KeywordInput(
+                    "z",
+                    "لپ تاپ ایسوس",
+                    search_demand=-1,
+                    search_demand_status="known",
+                )
+            ]
+        )
+        self.assertEqual(result.skipped[0].reason_code, "negative_search_demand")
+
     def test_head_prefers_known_demand_zero_over_unknown(self) -> None:
         result = cluster_keywords(
             [
@@ -156,18 +259,28 @@ class SkipAndDemandTest(unittest.TestCase):
 
 
 class DeterminismAndFingerprintReuseTest(unittest.TestCase):
-    def test_deterministic(self) -> None:
+    def test_deterministic_full_result_across_permutations(self) -> None:
+        # شناسه‌ها یکتا: duplicate با متن متفاوت ذاتاً به ترتیب ورودی وابسته‌اند.
         items = [
-            KeywordInput("1", "قیمت لپ تاپ", search_demand=100, search_demand_status="known"),
+            KeywordInput(
+                "1", "قیمت لپ تاپ", search_demand=100, search_demand_status="known"
+            ),
             KeywordInput("2", "بهترین لپ تاپ"),
             KeywordInput("3", "خرید لپ تاپ"),
+            KeywordInput("4", "لپ تاپ چیست"),
+            KeywordInput("", "خالی"),
+            KeywordInput("x", "خرید"),
+            KeywordInput(
+                "neg",
+                "لپ تاپ ایسوس",
+                search_demand=-3,
+                search_demand_status="known",
+            ),
         ]
-        a = cluster_keywords(items)
-        b = cluster_keywords(list(reversed(items)))
-        self.assertEqual(
-            {(c.cluster_id, c.head_keyword_id) for c in a.clusters},
-            {(c.cluster_id, c.head_keyword_id) for c in b.clusters},
-        )
+        results = [cluster_keywords(list(p)) for p in permutations(items)]
+        baseline = results[0]
+        for r in results[1:]:
+            self.assertEqual(r, baseline)
 
     def test_topic_core_uses_keyword_fingerprint(self) -> None:
         result = cluster_keywords([KeywordInput("1", "قیمت لپ تاپ")])
