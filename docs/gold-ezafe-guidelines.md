@@ -62,13 +62,15 @@
 ## گردش کار
 
 1. `python scripts/dryrun_ezafe_alignment.py` — فقط هم‌ترازی؛ بدون متریک کیفیت.
-2. در صورت تصمیم قرارداد Dadma-token: `--apply-dadma-tokens` (برچسب نمی‌سازد).
-3. `python scripts/make_ezafe_worksheet.py` → CSV با BOM برای اکسل.
-4. ستون `ezafe` را فقط با `0` یا `1` پر کنید؛ خالی نگذارید.
-5. `python scripts/ingest_ezafe_worksheet.py --worksheet ... --labeled-by NAME`
-6. سپس `scripts/eval_ezafe_gold.py` فقط روی `verified=true` و غیرمبهم
-   (گزارش تفکیکی: overall / wikipedia-vs-commercial / strata؛ n کمتر از ۲۰ →
-   `insufficient_sample`).
+2. در صورت تصمیم قرارداد Dadma-token: remint با `char_spans`.
+3. پاکسازی بدنه: `python scripts/clean_rebuild_ezafe_gold.py`
+4. `python scripts/make_ezafe_worksheet.py --seed 20260728` → CSV با BOM.
+   توکن‌های غیرقابل‌برچسب (`labelable=0`) از قبل `ezafe=-` دارند؛ آن‌ها را
+   به ۰/۱ تغییر ندهید.
+5. ستون `ezafe` را برای `labelable=1` فقط با `0` یا `1` پر کنید.
+6. `python scripts/ingest_ezafe_worksheet.py --worksheet ... --labeled-by NAME`
+7. `scripts/eval_ezafe_gold.py` — توکن‌های غیرقابل‌برچسب از طلایی و پیش‌بینی
+   کنار گذاشته می‌شوند و تعدادشان گزارش می‌شود.
 
 ## ممنوع
 

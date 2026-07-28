@@ -708,10 +708,15 @@ def evaluate_metric_splits(
     """Build overall / by_source / by_strata metrics from gold + pred flags.
 
     `predictions` maps example id -> list[int] ezafe flags aligned to tokens.
+    Non-labelable tokens (punct/number/latin/control) are dropped from both sides.
     """
+    from .ezafe_gold_filters import is_token_labelable
+
     overall_pairs: list[tuple[list[int], list[int]]] = []
     by_source: dict[str, list[tuple[list[int], list[int]]]] = defaultdict(list)
     by_strata: dict[str, list[tuple[list[int], list[int]]]] = defaultdict(list)
+    n_skipped_non_labelable = 0
+    n_labelable = 0
 
     for ex in examples:
         if ex.ezafe is None:
@@ -723,7 +728,18 @@ def evaluate_metric_splits(
             raise ValueError(
                 f"id={ex.id!r}: pred len {len(pred)} != gold len {len(ex.ezafe)}"
             )
-        pair = (list(ex.ezafe), list(pred))
+        g_keep: list[int] = []
+        p_keep: list[int] = []
+        for tok, gv, pv in zip(ex.tokens, ex.ezafe, pred, strict=True):
+            if not is_token_labelable(tok):
+                n_skipped_non_labelable += 1
+                continue
+            n_labelable += 1
+            g_keep.append(gv)
+            p_keep.append(pv)
+        if not g_keep:
+            continue
+        pair = (g_keep, p_keep)
         overall_pairs.append(pair)
         rollup = "wikipedia" if is_wikipedia_example(ex) else "commercial"
         by_source[rollup].append(pair)
@@ -747,6 +763,8 @@ def evaluate_metric_splits(
         )
 
     return {
+        "n_labelable_tokens": n_labelable,
+        "n_skipped_non_labelable": n_skipped_non_labelable,
         "overall": pack(overall_pairs),
         "by_source": {k: pack(v) for k, v in sorted(by_source.items())},
         "by_strata": {k: pack(v) for k, v in sorted(by_strata.items())},
@@ -757,13 +775,16 @@ WORKSHEET_FIELDS = [
     "id",
     "token_index",
     "token",
+    "labelable",
     "ezafe",
     "ambiguous",
 ]
 
 
 def make_worksheet_rows(examples: Iterable[GoldExample]) -> list[dict[str, str]]:
-    """Sentence header row + one token row; ezafe/ambiguous left blank (blind)."""
+    """Sentence header + token rows; non-labelable tokens pre-marked (not ezafe)."""
+    from .ezafe_gold_filters import is_token_labelable
+
     rows: list[dict[str, str]] = []
     for ex in examples:
         rows.append(
@@ -771,17 +792,21 @@ def make_worksheet_rows(examples: Iterable[GoldExample]) -> list[dict[str, str]]
                 "id": ex.id,
                 "token_index": "",
                 "token": ex.text,
+                "labelable": "",
                 "ezafe": "",
                 "ambiguous": "",
             }
         )
         for i, tok in enumerate(ex.tokens):
+            labelable = is_token_labelable(tok)
             rows.append(
                 {
                     "id": ex.id,
                     "token_index": str(i),
                     "token": tok,
-                    "ezafe": "",  # NEVER pre-fill from a model
+                    "labelable": "1" if labelable else "0",
+                    # NEVER pre-fill ezafe 0/1 from a model. Non-labelable → "-".
+                    "ezafe": "" if labelable else "-",
                     "ambiguous": "",
                 }
             )
@@ -808,6 +833,8 @@ def ingest_worksheet_csv(
     labeled_at: str | None = None,
 ) -> list[GoldExample]:
     """Merge human labels into gold examples. Strict validation; no auto-fix."""
+    from .ezafe_gold_filters import is_token_labelable
+
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"Worksheet missing: {p}")
@@ -816,18 +843,21 @@ def ingest_worksheet_csv(
         reader = csv.DictReader(fh)
         if reader.fieldnames is None:
             raise ValueError(f"Worksheet has no header: {p}")
-        missing = [c for c in ("id", "token_index", "token", "ezafe") if c not in reader.fieldnames]
+        missing = [
+            c
+            for c in ("id", "token_index", "token", "ezafe")
+            if c not in reader.fieldnames
+        ]
         if missing:
             raise ValueError(f"Worksheet missing columns {missing}: {p}")
 
-        by_id: dict[str, list[tuple[int, str, str, str]]] = {}
+        by_id: dict[str, list[tuple[int, str, str, str, str]]] = {}
         for line_no, row in enumerate(reader, start=2):  # header is line 1
             eid = (row.get("id") or "").strip()
             if not eid:
                 raise ValueError(f"Worksheet line {line_no}: empty id")
             idx_raw = (row.get("token_index") or "").strip()
             if idx_raw == "":
-                # Sentence context header row — not a label target.
                 continue
             try:
                 idx = int(idx_raw)
@@ -838,7 +868,8 @@ def ingest_worksheet_csv(
             tok = row.get("token") or ""
             lab = (row.get("ezafe") or "").strip()
             amb = (row.get("ambiguous") or "").strip().lower()
-            by_id.setdefault(eid, []).append((idx, tok, lab, amb))
+            lab_flag = (row.get("labelable") or "").strip()
+            by_id.setdefault(eid, []).append((idx, tok, lab, amb, lab_flag))
 
     out: list[GoldExample] = []
     for eid, cells in by_id.items():
@@ -853,12 +884,31 @@ def ingest_worksheet_csv(
             )
         labels: list[int] = []
         ambiguous = False
-        for idx, tok, lab, amb in cells_sorted:
+        for idx, tok, lab, amb, lab_flag in cells_sorted:
             if tok != base.tokens[idx]:
                 raise ValueError(
                     f"Worksheet id {eid!r} token_index={idx}: token text mismatch "
                     f"worksheet={tok!r} gold={base.tokens[idx]!r}"
                 )
+            expect_labelable = is_token_labelable(base.tokens[idx])
+            if lab_flag in {"0", "1"} and (lab_flag == "1") != expect_labelable:
+                raise ValueError(
+                    f"Worksheet id {eid!r} token_index={idx}: labelable column "
+                    f"{lab_flag!r} disagrees with token {tok!r}"
+                )
+            if not expect_labelable:
+                if lab in {"0", "1"}:
+                    raise ValueError(
+                        f"Worksheet id {eid!r} token_index={idx}: non-labelable "
+                        f"token {tok!r} must use ezafe='-', got {lab!r}"
+                    )
+                if lab not in {"", "-"}:
+                    raise ValueError(
+                        f"Worksheet id {eid!r} token_index={idx}: non-labelable "
+                        f"token {tok!r} ezafe must be '-', got {lab!r}"
+                    )
+                labels.append(0)  # placeholder; eval masks non-labelable
+                continue
             if amb in {"1", "true", "yes", "y"}:
                 ambiguous = True
             if lab not in {"0", "1"}:

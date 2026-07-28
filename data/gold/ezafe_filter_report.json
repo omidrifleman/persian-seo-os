@@ -1,0 +1,45 @@
+{
+  "existing_rejection_counts": {},
+  "harvest_wiki_rejection_counts": {},
+  "harvest_web_rejection_counts": {},
+  "wiki_template": {
+    "n_clusters": 95,
+    "largest_cluster": 3,
+    "dropped": 0,
+    "kept_after_dedupe": 120
+  },
+  "final_n": 200,
+  "final_by_kind": {
+    "wiki": 120,
+    "ecommerce": 80
+  },
+  "ecommerce_n": 80,
+  "ecommerce_domains": {
+    "digikala.com": 64,
+    "blog.okala.com": 4,
+    "emalls.ir": 1,
+    "modiseh.com": 8,
+    "basalam.com": 3
+  },
+  "ecommerce_shortfall": 0,
+  "rejected_samples": {
+    "existing": [],
+    "wiki_harvest": [],
+    "web_harvest": []
+  },
+  "existing_rejection_counts_first_pass": {
+    "no_finite_verb_end": 14,
+    "too_few_persian_tokens": 16,
+    "non_persian_token_ratio": 1,
+    "ui_chrome": 3,
+    "ellipsis_or_pipe": 20,
+    "relative_time": 4,
+    "email_or_url": 1
+  },
+  "wiki_template_after_topup": {
+    "n_clusters": 128,
+    "largest_cluster": 4,
+    "dropped": 4,
+    "kept_after_dedupe": 156
+  }
+}

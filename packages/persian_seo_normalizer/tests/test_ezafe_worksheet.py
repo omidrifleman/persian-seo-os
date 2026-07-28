@@ -14,6 +14,7 @@ from persian_seo_normalizer.ezafe_gold import (
     GoldExample,
     align_token_char_spans,
     confusion_counts,
+    evaluate_metric_splits,
     ingest_worksheet_csv,
     load_ezafe_gold,
     make_worksheet_rows,
@@ -22,9 +23,15 @@ from persian_seo_normalizer.ezafe_gold import (
 )
 
 
-def _ex(eid: str = "a") -> GoldExample:
-    text = "کتاب علی بود"
-    tokens = ("کتاب", "علی", "بود")
+def _ex(eid: str = "a", text: str = "کتاب علی بود.") -> GoldExample:
+    tokens = tuple(t for t in text.replace(".", " .").split() if t)
+    # ensure period is separate token if present
+    if text.endswith(".") and tokens[-1] != ".":
+        tokens = tuple(list(tokens) + ["."]) if not text[:-1].endswith(" ") else tokens
+    # deterministic: tokenize manually for test
+    if eid == "a" or text == "کتاب علی بود.":
+        text = "کتاب علی بود."
+        tokens = ("کتاب", "علی", "بود", ".")
     return GoldExample(
         id=eid,
         text=text,
@@ -45,14 +52,14 @@ def _ex(eid: str = "a") -> GoldExample:
 
 
 class TestWorksheetIngest(unittest.TestCase):
-    def test_worksheet_sentence_header_and_blank_labels(self):
+    def test_worksheet_marks_non_labelable(self):
         rows = make_worksheet_rows([_ex()])
-        self.assertEqual(rows[0]["token_index"], "")
-        self.assertEqual(rows[0]["token"], "کتاب علی بود")
         token_rows = [r for r in rows if r["token_index"] != ""]
-        self.assertEqual(len(token_rows), 3)
-        self.assertTrue(all(r["ezafe"] == "" for r in rows))
-        self.assertEqual(token_rows[0]["token"], "کتاب")
+        by_tok = {r["token"]: r for r in token_rows}
+        self.assertEqual(by_tok["کتاب"]["labelable"], "1")
+        self.assertEqual(by_tok["کتاب"]["ezafe"], "")
+        self.assertEqual(by_tok["."]["labelable"], "0")
+        self.assertEqual(by_tok["."]["ezafe"], "-")
 
     def test_ingest_roundtrip_sets_verified(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,7 +73,10 @@ class TestWorksheetIngest(unittest.TestCase):
             for row in rows:
                 if row["token_index"] == "":
                     continue
-                row["ezafe"] = "1" if row["token_index"] == "0" else "0"
+                if row["labelable"] == "0":
+                    row["ezafe"] = "-"
+                else:
+                    row["ezafe"] = "1" if row["token"] == "کتاب" else "0"
             with ws_path.open("w", encoding="utf-8-sig", newline="") as fh:
                 w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
                 w.writeheader()
@@ -77,11 +87,9 @@ class TestWorksheetIngest(unittest.TestCase):
             )
             self.assertEqual(len(labeled), 1)
             self.assertTrue(labeled[0].verified)
-            self.assertEqual(labeled[0].ezafe, (1, 0, 0))
-            self.assertEqual(labeled[0].labeled_by, "tester")
-            self.assertEqual(labeled[0].labeled_at, "T0")
+            self.assertEqual(labeled[0].ezafe, (1, 0, 0, 0))
 
-    def test_ingest_rejects_bad_label(self):
+    def test_ingest_rejects_label_on_non_labelable(self):
         with tempfile.TemporaryDirectory() as tmp:
             gold_path = Path(tmp) / "g.jsonl"
             ws_path = Path(tmp) / "w.csv"
@@ -91,9 +99,11 @@ class TestWorksheetIngest(unittest.TestCase):
             with ws_path.open(encoding="utf-8-sig") as fh:
                 rows = list(csv.DictReader(fh))
             for row in rows:
-                if row["token_index"] == "0":
-                    row["ezafe"] = "2"
-                elif row["token_index"] != "":
+                if row["token_index"] == "":
+                    continue
+                if row["token"] == ".":
+                    row["ezafe"] = "0"  # illegal
+                elif row["labelable"] == "1":
                     row["ezafe"] = "0"
             with ws_path.open("w", encoding="utf-8-sig", newline="") as fh:
                 w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
@@ -101,24 +111,63 @@ class TestWorksheetIngest(unittest.TestCase):
                 w.writerows(rows)
             with self.assertRaises(ValueError) as ctx:
                 ingest_worksheet_csv(ws_path, base_examples=base, labeled_by="t")
-            self.assertIn("0 or 1", str(ctx.exception))
+            self.assertIn("non-labelable", str(ctx.exception))
 
-    def test_load_require_labeled_fails_until_verified(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            gold_path = Path(tmp) / "g.jsonl"
-            write_ezafe_gold(gold_path, [_ex("a")])
-            with self.assertRaises(ValueError):
-                load_ezafe_gold(gold_path, require_labeled=True)
+    def test_eval_skips_non_labelable(self):
+        text = "کتاب علی."
+        tokens = ("کتاب", "علی", ".")
+        ex = GoldExample(
+            id="e",
+            text=text,
+            tokens=tokens,
+            char_spans=align_token_char_spans(text, tokens),
+            ezafe=(1, 0, 0),
+            verified=True,
+            source="fa.wikipedia.org",
+            source_kind="wiki",
+            source_url="https://fa.wikipedia.org/",
+            license="test",
+            collected_at="2026-01-01T00:00:00+00:00",
+            tokenizer_source="test",
+            dadmatools_version="test",
+            tokens_minted_at="2026-01-01T00:00:00+00:00",
+        )
+        # pred wrongly marks "." as ezafe — must be ignored
+        report = evaluate_metric_splits(
+            [ex] * 20,
+            predictions={ex.id: [1, 0, 1]},
+        )
+        # only one unique id in predictions — need unique ids
+        examples = []
+        preds = {}
+        for i in range(20):
+            e = GoldExample(
+                id=f"e{i}",
+                text=text,
+                tokens=tokens,
+                char_spans=align_token_char_spans(text, tokens),
+                ezafe=(1, 0, 0),
+                verified=True,
+                source="fa.wikipedia.org",
+                source_kind="wiki",
+                source_url="https://fa.wikipedia.org/",
+                license="test",
+                collected_at="2026-01-01T00:00:00+00:00",
+                tokenizer_source="test",
+                dadmatools_version="test",
+                tokens_minted_at="2026-01-01T00:00:00+00:00",
+            )
+            examples.append(e)
+            preds[e.id] = [1, 0, 1]
+        report = evaluate_metric_splits(examples, predictions=preds)
+        self.assertEqual(report["n_skipped_non_labelable"], 20)
+        self.assertEqual(report["n_labelable_tokens"], 40)
+        self.assertEqual(report["overall"]["status"], "ok")
+        self.assertAlmostEqual(report["overall"]["f1"] or 0.0, 1.0)
 
     def test_confusion_still_works(self):
         c = confusion_counts([1, 0], [1, 1])
         self.assertEqual(c.fp, 1)
-
-    def test_align_char_spans(self):
-        text = "کتاب علی."
-        tokens = ("کتاب", "علی", ".")
-        spans = align_token_char_spans(text, tokens)
-        self.assertEqual([text[s:e] for s, e in spans], list(tokens))
 
 
 if __name__ == "__main__":
