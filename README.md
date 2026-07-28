@@ -10,6 +10,12 @@ make test
 make up && make migrate
 ```
 
+## گزارش نمایشی خوشه‌بندی کلیدواژه
+```powershell
+python scripts/demo_report.py
+```
+خروجی: `out/demo_report.html` (ورودی پیش‌فرض: `data/demo_keywords.txt`).
+
 ## ساختار
 ```
 packages/persian_seo_normalizer/   لایه نرمال‌سازی فارسی (هسته مزیت رقابتی، MIT، قابل انتشار مستقل)
