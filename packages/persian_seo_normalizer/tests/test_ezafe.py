@@ -175,6 +175,131 @@ class TestEzafeApi(unittest.TestCase):
             assert_dadma_cache_ready(tmp)
             self.assertTrue((Path(tmp) / CACHE_READY_MARKER).is_file())
 
+    def test_adapter_shim_transfers_keys_or_raises(self):
+        """Shim must move >0 embedding keys; zero transfer is a hard failure."""
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        import torch
+
+        from persian_seo_normalizer.ezafe import (
+            EzafeBackendUnavailable,
+            apply_kasreh_embedding_adapter_shim,
+            map_task_adapters_to_embedding,
+        )
+
+        emb_keys = [
+            "xlmr.encoder.layer.0.output.layer_text_task_adapters.embedding.adapter_down.0.weight",
+            "xlmr.encoder.layer.0.output.layer_text_task_adapters.embedding.adapter_up.weight",
+        ]
+        adapters = {
+            "xlmr.encoder.layer.0.output.layer_text_task_adapters.ner.adapter_down.0.weight": torch.ones(2),
+            "xlmr.encoder.layer.0.output.layer_text_task_adapters.ner.adapter_up.weight": torch.ones(2),
+            "entity_label_ffn.layers.0.weight": torch.ones(2),
+        }
+        mapped = map_task_adapters_to_embedding(
+            adapters, task_name="ner", embedding_keys=emb_keys
+        )
+        self.assertEqual(len(mapped), 2)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mdl = (
+                Path(tmp)
+                / "xlm-roberta-base"
+                / "persian"
+                / "persian.kasreh.mdl"
+            )
+            mdl.parent.mkdir(parents=True)
+            torch.save({"adapters": adapters, "epoch": 1}, mdl)
+
+            embedding = MagicMock()
+            embedding.state_dict.return_value = {
+                k: torch.zeros(2) for k in emb_keys
+            }
+            pipeline = SimpleNamespace(
+                _config=SimpleNamespace(
+                    active_lang="persian",
+                    _cache_dir=tmp,
+                    embedding_name="xlm-roberta-base",
+                ),
+                _embedding_layers=embedding,
+                _embedding_weights={},
+            )
+            n = apply_kasreh_embedding_adapter_shim(pipeline)
+            self.assertEqual(n, 2)
+            embedding.load_state_dict.assert_called_once()
+            loaded = embedding.load_state_dict.call_args[0][0]
+            self.assertTrue(
+                torch.equal(loaded[emb_keys[0]], torch.ones(2))
+            )
+
+            # Zero transferable keys → red.
+            torch.save(
+                {
+                    "adapters": {
+                        "entity_label_ffn.layers.0.weight": torch.ones(2),
+                    },
+                    "epoch": 1,
+                },
+                mdl,
+            )
+            with self.assertRaises(EzafeBackendUnavailable) as ctx:
+                apply_kasreh_embedding_adapter_shim(pipeline)
+            self.assertIn("no layer_text_task_adapters", str(ctx.exception).lower())
+
+    def test_adapter_shim_rejects_ambiguous_task_names(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        import torch
+
+        from persian_seo_normalizer.ezafe import (
+            EzafeBackendUnavailable,
+            apply_kasreh_embedding_adapter_shim,
+            discover_adapter_task_names,
+        )
+
+        keys = [
+            "xlmr.encoder.layer.0.output.layer_text_task_adapters.ner.adapter_up.weight",
+            "xlmr.encoder.layer.0.output.layer_text_task_adapters.kasreh.adapter_up.weight",
+        ]
+        self.assertEqual(discover_adapter_task_names(keys), {"ner", "kasreh"})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mdl = (
+                Path(tmp)
+                / "xlm-roberta-base"
+                / "persian"
+                / "persian.kasreh.mdl"
+            )
+            mdl.parent.mkdir(parents=True)
+            torch.save(
+                {
+                    "adapters": {k: torch.ones(2) for k in keys},
+                    "epoch": 1,
+                },
+                mdl,
+            )
+            embedding = MagicMock()
+            embedding.state_dict.return_value = {
+                "xlmr.encoder.layer.0.output.layer_text_task_adapters.embedding.adapter_up.weight": torch.zeros(2)
+            }
+            pipeline = SimpleNamespace(
+                _config=SimpleNamespace(
+                    active_lang="persian",
+                    _cache_dir=tmp,
+                    embedding_name="xlm-roberta-base",
+                ),
+                _embedding_layers=embedding,
+            )
+            with self.assertRaises(EzafeBackendUnavailable) as ctx:
+                apply_kasreh_embedding_adapter_shim(pipeline)
+            self.assertIn("multiple task names", str(ctx.exception).lower())
+
     def test_audit_ezafe_skips_with_reason_when_backend_missing(self):
         from persian_seo_normalizer import EZAFE_AUDIT_CODE, audit_ezafe_kasreh
 

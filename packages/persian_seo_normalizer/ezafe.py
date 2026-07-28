@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -27,9 +29,18 @@ _OBSERVED_POSITIVE_LABELS = {"s-kasreh", "b-kasreh", "i-kasreh", "e-kasreh"}
 _logged_unknown_labels: set[str] = set()
 
 CACHE_ENV = "PERSIAN_SEO_DADMA_CACHE"
-# Written only after a successful Pipeline() construction — not a size guess.
-CACHE_READY_MARKER = ".persian_seo_os_dadma_pipeline_ok"
+# Written only after a successful Pipeline() + adapter shim — not a size guess.
+# Versioned so older markers without the shim contract are treated as incomplete.
+CACHE_READY_MARKER = ".persian_seo_os_dadma_pipeline_ok.v2"
+CACHE_READY_MARKER_CONTENT = "pipeline_ok\nv2\n"
 EZAFE_AUDIT_CODE = "fa.text.missing_ezafe_kasreh"
+
+# Classic genitive NP: ezafe links کتاب to علی. Process-health smoke only —
+# proves the embedding adapters were remapped; does not certify every call.
+# Why this phrase: short, unambiguous ezafe, used in Dadma docs/examples.
+KASREH_SMOKE_PHRASE = "کتاب علی"
+
+_ADAPTER_TASK_RE = re.compile(r"layer_text_task_adapters\.([^.]+)\.")
 
 
 @dataclass(frozen=True)
@@ -73,11 +84,11 @@ def dadma_cache_marker_path(cache_dir: str) -> Path:
 
 
 def write_dadma_cache_marker(cache_dir: str) -> Path:
-    """فقط پس از بارگذاری موفق Pipeline فراخوانی شود."""
+    """فقط پس از Pipeline + shim موفق فراخوانی شود (کامل بودن کش روی دیسک)."""
     root = Path(cache_dir)
     root.mkdir(parents=True, exist_ok=True)
     path = dadma_cache_marker_path(cache_dir)
-    path.write_text("pipeline_ok\n", encoding="utf-8")
+    path.write_text(CACHE_READY_MARKER_CONTENT, encoding="utf-8")
     return path
 
 
@@ -108,9 +119,10 @@ def resolve_dadma_cache_dir(explicit: str | None = None) -> str:
 
 
 def assert_dadma_cache_ready(cache_dir: str) -> None:
-    """کش معتبر = پوشه موجود + نشانگر بارگذاری موفق Pipeline.
+    """کش معتبر = پوشه موجود + نشانگر نسخه‌دار بارگذاری موفق.
 
     حدس اندازه فایل نمی‌زنیم؛ دانلود ناقص نشانگر ندارد.
+    این فقط کامل بودن کش روی دیسک را می‌گوید — نه صحت هر استنتاج.
     """
     root = Path(cache_dir)
     if not root.is_dir():
@@ -125,6 +137,138 @@ def assert_dadma_cache_ready(cache_dir: str) -> None:
             "Treat as incomplete/corrupt. Load Pipeline once successfully to write "
             f"the marker, or mount a cache that already includes it via {CACHE_ENV}. "
             "Dropbox/HF downloads from Iran are unreliable."
+        )
+
+
+def discover_adapter_task_names(adapter_keys: Iterable[str]) -> set[str]:
+    """نام تسک(ها) را از کلیدهای layer_text_task_adapters.<task>. استخراج می‌کند."""
+    names: set[str] = set()
+    for key in adapter_keys:
+        match = _ADAPTER_TASK_RE.search(key)
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def map_task_adapters_to_embedding(
+    adapters: dict[str, Any],
+    *,
+    task_name: str,
+    embedding_keys: Iterable[str],
+) -> dict[str, Any]:
+    """کلیدهای adapters.<task> را به adapters.embedding روی انکودر نگاشت می‌کند."""
+    emb_key_set = set(embedding_keys)
+    needle = f"layer_text_task_adapters.{task_name}."
+    replacement = "layer_text_task_adapters.embedding."
+    mapped: dict[str, Any] = {}
+    for name, value in adapters.items():
+        if needle not in name:
+            continue
+        target = name.replace(needle, replacement, 1)
+        if target in emb_key_set:
+            mapped[target] = value
+    return mapped
+
+
+def apply_kasreh_embedding_adapter_shim(pipeline: Any) -> int:
+    """جبران باگ DadmaTools 2.3.6: آداپتورهای kasreh هرگز روی embedding لود نمی‌شوند.
+
+    Upstream:
+      - Base_Model با add_adapter('embedding') وزن تصادفی می‌سازد.
+      - _kasreh_doc با model_name='ner' صدا می‌زند و چون 'ner' در pipelines نیست
+        زودبازمى‌گردد؛ حتی با نام درست، کلیدهای چک‌پوینت
+        layer_text_task_adapters.ner.* با needle adapters.kasreh.adapter جفت نمی‌شوند.
+    این shim فایل *.kasreh.mdl را می‌خواند، نام تسک را از کلیدها کشف می‌کند
+    (هاردکد نیست)، و به layer_text_task_adapters.embedding.* کپی می‌کند.
+
+    Returns:
+        تعداد کلیدهای منتقل‌شده به embedding (باید > 0).
+    """
+    try:
+        import torch
+    except ImportError as exc:
+        raise EzafeBackendUnavailable(
+            "torch is required to apply the kasreh embedding adapter shim."
+        ) from exc
+
+    lang = pipeline._config.active_lang
+    cache_dir = pipeline._config._cache_dir
+    embedding_name = pipeline._config.embedding_name
+    mdl_path = Path(cache_dir) / embedding_name / lang / f"{lang}.kasreh.mdl"
+    if not mdl_path.is_file():
+        raise EzafeBackendUnavailable(
+            f"Kasreh checkpoint missing for adapter shim: {mdl_path}"
+        )
+
+    checkpoint = torch.load(str(mdl_path), map_location="cpu")
+    if not isinstance(checkpoint, dict) or "adapters" not in checkpoint:
+        raise EzafeBackendUnavailable(
+            f"Kasreh checkpoint has no 'adapters' dict: {mdl_path}"
+        )
+    adapters = checkpoint["adapters"]
+    if not isinstance(adapters, dict) or not adapters:
+        raise EzafeBackendUnavailable(
+            f"Kasreh checkpoint adapters empty: {mdl_path}"
+        )
+
+    task_names = discover_adapter_task_names(adapters.keys())
+    if not task_names:
+        raise EzafeBackendUnavailable(
+            "Kasreh checkpoint adapters contain no layer_text_task_adapters.<task> keys; "
+            "cannot discover task name for embedding shim."
+        )
+    if len(task_names) != 1:
+        raise EzafeBackendUnavailable(
+            "Kasreh checkpoint adapters contain multiple task names "
+            f"{sorted(task_names)!r}; refusing ambiguous embedding shim."
+        )
+    task_name = next(iter(task_names))
+
+    embedding = pipeline._embedding_layers
+    full_state = embedding.state_dict()
+    mapped = map_task_adapters_to_embedding(
+        adapters, task_name=task_name, embedding_keys=full_state.keys()
+    )
+    if not mapped:
+        raise EzafeBackendUnavailable(
+            "Kasreh embedding adapter shim transferred 0 keys "
+            f"(task={task_name!r}, checkpoint={mdl_path}). "
+            "Upstream adapter load is broken and shim could not compensate."
+        )
+
+    full_state.update(mapped)
+    embedding.load_state_dict(full_state)
+    if hasattr(pipeline, "_embedding_weights"):
+        pipeline._embedding_weights = embedding.state_dict()
+
+    _LOG.info(
+        "Applied kasreh embedding adapter shim: task=%r keys=%d path=%s",
+        task_name,
+        len(mapped),
+        mdl_path,
+    )
+    return len(mapped)
+
+
+def _smoke_kasreh_pipeline(pipeline: Any) -> None:
+    """سلامت پروسه پس از shim — نتیجه روی دیسک ذخیره نمی‌شود.
+
+    فقط smoke است؛ صحت هر فراخوانی بعدی را تضمین نمی‌کند.
+    """
+    doc = pipeline(KASREH_SMOKE_PHRASE)
+    marks: list[tuple[str, object]] = []
+    for token in _iter_doc_tokens(doc):
+        marks.append((_token_text(token), _token_kasreh_value(token)))
+    positives = [
+        (text, raw)
+        for text, raw in marks
+        if parse_kasreh_label(raw)[0]
+    ]
+    if not positives:
+        raise EzafeBackendUnavailable(
+            "Kasreh process-health smoke failed on "
+            f"{KASREH_SMOKE_PHRASE!r}: expected ≥1 ezafe mark, got {marks!r}. "
+            "Embedding adapters are still random or shim did not apply."
         )
 
 
@@ -232,9 +376,13 @@ class DadmaEzafeBackend:
         ):
             return DadmaEzafeBackend._pipeline
 
+        marker = dadma_cache_marker_path(cache)
+        if marker.is_file():
+            assert_dadma_cache_ready(cache)
+
         try:
-            # Submodule import is intentional: `from dadmatools.pipeline import language`
-            # is a different object and fails the gated kasreh contract tests.
+            # Prefer submodule import — project convention (same object as
+            # `from dadmatools.pipeline import language`).
             import dadmatools.pipeline.language as language  # noqa: WPS433, PLR0402
         except ImportError as exc:
             raise EzafeBackendUnavailable(
@@ -244,11 +392,13 @@ class DadmaEzafeBackend:
             ) from exc
 
         # Marker absence = unverified/incomplete. We still attempt one load;
-        # only a successful Pipeline() writes the marker (no file-size guesses).
-        # On failure leave marker absent so the cache stays marked incomplete.
+        # only a successful Pipeline()+shim+smoke writes the marker.
         pipeline = language.Pipeline("tok,kasreh", cache_dir=cache, gpu=self._gpu)
+        apply_kasreh_embedding_adapter_shim(pipeline)
+        _smoke_kasreh_pipeline(pipeline)
 
         write_dadma_cache_marker(cache)
+        assert_dadma_cache_ready(cache)
         DadmaEzafeBackend._pipeline = pipeline
         DadmaEzafeBackend._pipeline_cache_dir = cache
         return DadmaEzafeBackend._pipeline
