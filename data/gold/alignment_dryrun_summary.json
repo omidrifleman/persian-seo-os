@@ -1,0 +1,25 @@
+{
+  "before_remint": {
+    "total": 185,
+    "n_aligned": 3,
+    "n_unaligned": 182,
+    "unaligned_rate": 0.9837837837837838,
+    "decision": "switch_token_contract_to_dadma",
+    "mismatch_reasons": {
+      "punctuation": 114,
+      "other": 30,
+      "zwnj": 19,
+      "number": 18,
+      "latin": 1
+    }
+  },
+  "after_remint": {
+    "total": 185,
+    "n_aligned": 185,
+    "n_unaligned": 0,
+    "unaligned_rate": 0.0,
+    "decision": "keep_hand_tokens",
+    "note": "tokens now equal Dadma boundaries; ezafe still null"
+  },
+  "token_contract": "dadmatools"
+}

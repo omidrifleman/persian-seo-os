@@ -1,15 +1,13 @@
-"""Evaluate detect_ezafe against data/gold/ezafe_gold.jsonl.
+"""Evaluate detect_ezafe against labeled ezafe gold (split reports).
 
-Usage:
-  python scripts/eval_ezafe_gold.py
-  python scripts/eval_ezafe_gold.py --gold path/to/file.jsonl
-
-Requires PERSIAN_SEO_DADMA_CACHE for the real backend. Does not invent metrics
-when the gold file is missing or empty.
+Outputs three levels: overall, by source rollup (wikipedia vs commercial),
+by strata. Slices with fewer than MIN_EVAL_EXAMPLES examples print
+insufficient_sample and omit F1 numbers.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -18,8 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "packages"))
 
 from persian_seo_normalizer.ezafe_gold import (
-    confusion_counts,
-    format_metrics_report,
+    evaluate_metric_splits,
     load_ezafe_gold,
 )
 
@@ -52,35 +49,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        examples = load_ezafe_gold(args.gold)
+        examples = load_ezafe_gold(args.gold, require_labeled=True)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
-    unverified = sum(1 for ex in examples if not ex.verified)
-    if unverified:
-        print(
-            f"WARNING: {unverified}/{len(examples)} examples have verified=false "
-            "(placeholder samples; do not treat F1 as product claim).",
-            file=sys.stderr,
-        )
-
     if not os.environ.get("PERSIAN_SEO_DADMA_CACHE"):
-        print(
-            "ERROR: set PERSIAN_SEO_DADMA_CACHE to an absolute prepared cache path.",
-            file=sys.stderr,
-        )
-        return 2
+        repo_cache = ROOT / "cache" / "dadmatools"
+        if repo_cache.is_dir():
+            os.environ["PERSIAN_SEO_DADMA_CACHE"] = str(repo_cache.resolve())
+        else:
+            print(
+                "ERROR: set PERSIAN_SEO_DADMA_CACHE to an absolute prepared cache path.",
+                file=sys.stderr,
+            )
+            return 2
 
-    gold_all: list[int] = []
-    pred_all: list[int] = []
-    for ex in examples:
-        pred = _pred_ezafe_flags(ex.text, ex.tokens)
-        gold_all.extend(ex.ezafe)
-        pred_all.extend(pred)
-
-    counts = confusion_counts(gold_all, pred_all)
-    print(format_metrics_report(counts, n_examples=len(examples), n_tokens=len(gold_all)))
+    predictions = {
+        ex.id: _pred_ezafe_flags(ex.text, ex.tokens) for ex in examples
+    }
+    report = evaluate_metric_splits(examples, predictions=predictions)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 
 

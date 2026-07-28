@@ -4,6 +4,18 @@
 برچسب را از مدل (`detect_ezafe` یا هر سیستم دیگر) کپی نکنید.
 اگر مدل پیشنهاد بدهد و انسان فقط تأیید کند، آن نمونه برای سنجش نامعتبر است.
 
+## مرز توکن در برابر برچسب کسره (تمایز اجباری)
+
+- **برچسب کسره (`ezafe` 0/1)** همیشه انسانی و کور است. هیچ‌گاه از خروجی مدل
+  پیش‌پر یا «پیشنهاد + تأیید» نمی‌شود.
+- **مرز توکن (`tokens`)** قرارداد هم‌ترازی با پایپ‌لاین ارزیابی است.
+  اگر dry-run هم‌ترازی (`scripts/dryrun_ezafe_alignment.py`) نرخ عدم هم‌ترازی
+  بالای ۱۰٪ نشان دهد، مبنای برگه از توکن‌بندی دستی به **همان توکن‌بندی
+  DadmaTools** عوض می‌شود — فقط مرزها، نه برچسب کسره.
+  این کار نقض برچسب‌گذاری کور نیست.
+
+تا وقتی گزارش dry-run دیده و تصمیم گرفته نشده، برگهٔ برچسب‌گذاری تولید نکنید.
+
 ## تعریف عملیاتی
 
 برای هر توکن در جملهٔ قطعه‌قطعه‌شده:
@@ -45,13 +57,18 @@
 
 ## گردش کار
 
-1. `python scripts/make_ezafe_worksheet.py` → CSV با BOM برای اکسل.
-2. ستون `ezafe` را فقط با `0` یا `1` پر کنید؛ خالی نگذارید.
-3. `python scripts/ingest_ezafe_worksheet.py --worksheet ... --labeled-by NAME`
-4. سپس `scripts/eval_ezafe_gold.py` فقط روی `verified=true` و غیرمبهم.
+1. `python scripts/dryrun_ezafe_alignment.py` — فقط هم‌ترازی؛ بدون متریک کیفیت.
+2. در صورت تصمیم قرارداد Dadma-token: `--apply-dadma-tokens` (برچسب نمی‌سازد).
+3. `python scripts/make_ezafe_worksheet.py` → CSV با BOM برای اکسل.
+4. ستون `ezafe` را فقط با `0` یا `1` پر کنید؛ خالی نگذارید.
+5. `python scripts/ingest_ezafe_worksheet.py --worksheet ... --labeled-by NAME`
+6. سپس `scripts/eval_ezafe_gold.py` فقط روی `verified=true` و غیرمبهم
+   (گزارش تفکیکی: overall / wikipedia-vs-commercial / strata؛ n کمتر از ۲۰ →
+   `insufficient_sample`).
 
 ## ممنوع
 
 - پیش‌پر کردن برچسب از خروجی مدل
 - اصلاح خودکار طول آرایه یا برچسب نامعتبر در ingest
 - ساختن جملهٔ مصنوعی برای پر کردن سهمیهٔ strata
+- یک F1 واحد به‌عنوان شرط پذیرش محصول (متن تجاری باید جدا قابل قبول باشد)

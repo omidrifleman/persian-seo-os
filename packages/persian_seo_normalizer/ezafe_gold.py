@@ -4,11 +4,13 @@ from __future__ import annotations
 import csv
 import json
 import re
+from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ZWNJ = "\u200c"
 
@@ -28,6 +30,14 @@ _WORD_SPLIT = re.compile(r"\s+")
 _EDGE_PUNCT = re.compile(r"^[\s\"'«»\(\)\[\]\{\}،,؛;:]+|[\s\"'«»\(\)\[\]\{\}،,؛;.!?؟۔]+$")
 
 
+MIN_EVAL_EXAMPLES = 20
+ALIGNMENT_FAIL_THRESHOLD = 0.10
+
+# Bucket labels kept separate from concrete domain `source`.
+SOURCE_KIND_WIKIPEDIA = "wikipedia"
+SOURCE_KIND_COMMERCIAL = "commercial"  # rollup for eval: non-wikipedia
+
+
 @dataclass(frozen=True)
 class GoldExample:
     id: str
@@ -39,6 +49,7 @@ class GoldExample:
     ambiguous: bool = False
     strata: tuple[str, ...] = ()
     source: str = ""
+    source_kind: str = ""
     source_url: str = ""
     license: str = ""
     collected_at: str = ""
@@ -152,6 +163,20 @@ def detect_strata(text: str) -> list[str]:
     return tags
 
 
+def canonical_domain(url: str) -> str:
+    """Host without leading www.; empty if URL unparsable."""
+    host = (urlparse(url).netloc or "").lower().strip()
+    return host.removeprefix("www.")
+
+
+def is_wikipedia_example(ex: GoldExample) -> bool:
+    if ex.source_kind == SOURCE_KIND_WIKIPEDIA:
+        return True
+    if ex.source in {"fa.wikipedia", "fa.wikipedia.org"}:
+        return True
+    return "wikipedia.org" in (ex.source or "")
+
+
 def example_to_json(ex: GoldExample) -> dict[str, Any]:
     row: dict[str, Any] = {
         "id": ex.id,
@@ -163,6 +188,7 @@ def example_to_json(ex: GoldExample) -> dict[str, Any]:
         "ambiguous": ex.ambiguous,
         "strata": list(ex.strata),
         "source": ex.source,
+        "source_kind": ex.source_kind,
         "source_url": ex.source_url,
         "license": ex.license,
         "collected_at": ex.collected_at,
@@ -192,6 +218,7 @@ def example_from_json(raw: dict[str, Any]) -> GoldExample:
         "ambiguous",
         "strata",
         "source",
+        "source_kind",
         "source_url",
         "license",
         "collected_at",
@@ -201,6 +228,16 @@ def example_from_json(raw: dict[str, Any]) -> GoldExample:
         "labeled_at",
     }
     extra = {k: v for k, v in raw.items() if k not in known}
+    source = str(raw.get("source", ""))
+    source_kind = str(raw.get("source_kind", "") or "")
+    if not source_kind:
+        # Backward-compat for pre-migration buckets / wiki tag.
+        if source in {"fa.wikipedia", "fa.wikipedia.org"} or "wikipedia" in source:
+            source_kind = SOURCE_KIND_WIKIPEDIA
+        elif source in {"blog_portal", "shop_mag", "news_portal"}:
+            source_kind = source
+        else:
+            source_kind = "web"
     return GoldExample(
         id=str(raw["id"]),
         text=str(raw["text"]),
@@ -210,7 +247,8 @@ def example_from_json(raw: dict[str, Any]) -> GoldExample:
         verified=bool(raw.get("verified", False)),
         ambiguous=bool(raw.get("ambiguous", False)),
         strata=tuple(str(s) for s in raw.get("strata", []) or []),
-        source=str(raw.get("source", "")),
+        source=source,
+        source_kind=source_kind,
         source_url=str(raw.get("source_url", "")),
         license=str(raw.get("license", "")),
         collected_at=str(raw.get("collected_at", "")),
@@ -296,6 +334,9 @@ def confusion_counts(gold: Iterable[int], pred: Iterable[int]) -> BinaryCounts:
 
 
 def format_metrics_report(counts: BinaryCounts, *, n_examples: int, n_tokens: int) -> str:
+    payload = metrics_slice_payload(counts, n_examples=n_examples, n_tokens=n_tokens)
+    if payload["status"] == "insufficient_sample":
+        return "insufficient_sample"
     def fmt(x: float | None) -> str:
         return "n/a" if x is None else f"{x:.4f}"
 
@@ -309,6 +350,161 @@ def format_metrics_report(counts: BinaryCounts, *, n_examples: int, n_tokens: in
             ),
         ]
     )
+
+
+def metrics_slice_payload(
+    counts: BinaryCounts,
+    *,
+    n_examples: int,
+    n_tokens: int,
+    min_examples: int = MIN_EVAL_EXAMPLES,
+) -> dict[str, Any]:
+    """Eval slice payload. Small slices → insufficient_sample (no F1 numbers)."""
+    if n_examples < min_examples:
+        return {"status": "insufficient_sample"}
+    return {
+        "status": "ok",
+        "n_examples": n_examples,
+        "n_tokens": n_tokens,
+        "tp": counts.tp,
+        "fp": counts.fp,
+        "tn": counts.tn,
+        "fn": counts.fn,
+        "precision": counts.precision,
+        "recall": counts.recall,
+        "f1": counts.f1,
+    }
+
+
+def tokens_aligned(ours: Iterable[str], model: Iterable[str]) -> bool:
+    return list(ours) == list(model)
+
+
+def classify_alignment_mismatch(ours: list[str], model: list[str]) -> str:
+    """Dominant mismatch bucket for reporting (not a gold label)."""
+    if tokens_aligned(ours, model):
+        return "aligned"
+    o_join = "".join(ours)
+    m_join = "".join(model)
+    punct = set(".,!?;:،؛؟۔«»\"'()[]{}…-_/")
+    if any(ch in punct for ch in o_join + m_join) and re.sub(
+        r"[^\w\u0600-\u06FF\u200c]+", "", o_join, flags=re.UNICODE
+    ) == re.sub(r"[^\w\u0600-\u06FF\u200c]+", "", m_join, flags=re.UNICODE):
+        return "punctuation"
+    if (ZWNJ in o_join) != (ZWNJ in m_join) or any(
+        (ZWNJ in a) != (ZWNJ in b) for a, b in zip(ours, model, strict=False)
+    ):
+        return "zwnj"
+    if re.search(r"[\d۰-۹٠-٩]", o_join + m_join):
+        return "number"
+    if re.search(r"[A-Za-z]", o_join + m_join):
+        return "latin"
+    return "other"
+
+
+def with_replaced_tokens(ex: GoldExample, tokens: tuple[str, ...]) -> GoldExample:
+    """Replace token boundaries only; never copies ezafe labels from a model."""
+    return GoldExample(
+        id=ex.id,
+        text=ex.text,
+        tokens=tokens,
+        ezafe=None if ex.ezafe is None else ex.ezafe,
+        note=ex.note,
+        verified=ex.verified,
+        ambiguous=ex.ambiguous,
+        strata=ex.strata,
+        source=ex.source,
+        source_kind=ex.source_kind,
+        source_url=ex.source_url,
+        license=ex.license,
+        collected_at=ex.collected_at,
+        page_title=ex.page_title,
+        revision_id=ex.revision_id,
+        labeled_by=ex.labeled_by,
+        labeled_at=ex.labeled_at,
+        extra=dict(ex.extra),
+    )
+
+
+def with_source_fields(
+    ex: GoldExample,
+    *,
+    source: str,
+    source_kind: str,
+) -> GoldExample:
+    return GoldExample(
+        id=ex.id,
+        text=ex.text,
+        tokens=ex.tokens,
+        ezafe=ex.ezafe,
+        note=ex.note,
+        verified=ex.verified,
+        ambiguous=ex.ambiguous,
+        strata=ex.strata,
+        source=source,
+        source_kind=source_kind,
+        source_url=ex.source_url,
+        license=ex.license,
+        collected_at=ex.collected_at,
+        page_title=ex.page_title,
+        revision_id=ex.revision_id,
+        labeled_by=ex.labeled_by,
+        labeled_at=ex.labeled_at,
+        extra=dict(ex.extra),
+    )
+
+
+def evaluate_metric_splits(
+    examples: list[GoldExample],
+    *,
+    predictions: dict[str, list[int]],
+) -> dict[str, Any]:
+    """Build overall / by_source / by_strata metrics from gold + pred flags.
+
+    `predictions` maps example id -> list[int] ezafe flags aligned to tokens.
+    """
+    overall_pairs: list[tuple[list[int], list[int]]] = []
+    by_source: dict[str, list[tuple[list[int], list[int]]]] = defaultdict(list)
+    by_strata: dict[str, list[tuple[list[int], list[int]]]] = defaultdict(list)
+
+    for ex in examples:
+        if ex.ezafe is None:
+            raise ValueError(f"example {ex.id!r} has no ezafe labels")
+        if ex.id not in predictions:
+            raise ValueError(f"missing prediction for id={ex.id!r}")
+        pred = predictions[ex.id]
+        if len(pred) != len(ex.ezafe):
+            raise ValueError(
+                f"id={ex.id!r}: pred len {len(pred)} != gold len {len(ex.ezafe)}"
+            )
+        pair = (list(ex.ezafe), list(pred))
+        overall_pairs.append(pair)
+        rollup = "wikipedia" if is_wikipedia_example(ex) else "commercial"
+        by_source[rollup].append(pair)
+        by_source[f"domain:{ex.source}"].append(pair)
+        for s in ex.strata or ("(none)",):
+            by_strata[s].append(pair)
+
+    def pack(pairs: list[tuple[list[int], list[int]]]) -> dict[str, Any]:
+        if not pairs:
+            return metrics_slice_payload(
+                BinaryCounts(0, 0, 0, 0), n_examples=0, n_tokens=0
+            )
+        gold_all: list[int] = []
+        pred_all: list[int] = []
+        for g, p in pairs:
+            gold_all.extend(g)
+            pred_all.extend(p)
+        counts = confusion_counts(gold_all, pred_all)
+        return metrics_slice_payload(
+            counts, n_examples=len(pairs), n_tokens=len(gold_all)
+        )
+
+    return {
+        "overall": pack(overall_pairs),
+        "by_source": {k: pack(v) for k, v in sorted(by_source.items())},
+        "by_strata": {k: pack(v) for k, v in sorted(by_strata.items())},
+    }
 
 
 WORKSHEET_FIELDS = [
@@ -439,6 +635,7 @@ def ingest_worksheet_csv(
                 ambiguous=ambiguous,
                 strata=base.strata,
                 source=base.source,
+                source_kind=base.source_kind,
                 source_url=base.source_url,
                 license=base.license,
                 collected_at=base.collected_at,

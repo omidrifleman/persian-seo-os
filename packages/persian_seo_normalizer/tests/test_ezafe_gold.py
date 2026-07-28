@@ -11,9 +11,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from persian_seo_normalizer.ezafe_gold import (
     BinaryCounts,
+    classify_alignment_mismatch,
     confusion_counts,
     format_metrics_report,
     load_ezafe_gold,
+    metrics_slice_payload,
+    tokens_aligned,
 )
 
 
@@ -66,10 +69,44 @@ class TestEzafeGoldMetrics(unittest.TestCase):
 
     def test_format_report_contains_counts(self):
         text = format_metrics_report(
-            BinaryCounts(tp=1, fp=0, tn=1, fn=0), n_examples=1, n_tokens=2
+            BinaryCounts(tp=1, fp=0, tn=1, fn=0), n_examples=20, n_tokens=40
         )
         self.assertIn("tp=1", text)
         self.assertIn("precision=", text)
+
+    def test_format_report_insufficient_sample(self):
+        text = format_metrics_report(
+            BinaryCounts(tp=1, fp=0, tn=1, fn=0), n_examples=5, n_tokens=10
+        )
+        self.assertEqual(text, "insufficient_sample")
+
+    def test_metrics_slice_payload_gates_small_n(self):
+        c = BinaryCounts(tp=1, fp=0, tn=1, fn=0)
+        small = metrics_slice_payload(c, n_examples=19, n_tokens=38)
+        self.assertEqual(small, {"status": "insufficient_sample"})
+        big = metrics_slice_payload(c, n_examples=20, n_tokens=40)
+        self.assertEqual(big["status"], "ok")
+        self.assertIn("f1", big)
+
+    def test_alignment_helpers(self):
+        self.assertTrue(tokens_aligned(["a", "b"], ["a", "b"]))
+        self.assertFalse(tokens_aligned(["a"], ["a", "b"]))
+        self.assertEqual(
+            classify_alignment_mismatch(["foo."], ["foo"]),
+            "punctuation",
+        )
+        self.assertEqual(
+            classify_alignment_mismatch(["می‌رود"], ["می", "رود"]),
+            "zwnj",
+        )
+        self.assertEqual(
+            classify_alignment_mismatch(["۱۲۳"], ["12", "3"]),
+            "number",
+        )
+        self.assertEqual(
+            classify_alignment_mismatch(["iPhone"], ["i", "Phone"]),
+            "latin",
+        )
 
 
 if __name__ == "__main__":

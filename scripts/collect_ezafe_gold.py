@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "packages"))
 from persian_seo_normalizer.ezafe_gold import (
     GoldExample,
     assign_strata_quotas,
+    canonical_domain,
     detect_strata,
     load_ezafe_gold,
     tokenize_raw,
@@ -161,7 +162,8 @@ def fetch_wikipedia_fa(limit: int = 250) -> list[GoldExample]:
                         ezafe=None,
                         verified=False,
                         strata=tuple(strata),
-                        source="fa.wikipedia",
+                        source="fa.wikipedia.org",
+                        source_kind="wikipedia",
                         source_url=url,
                         license="CC BY-SA 4.0",
                         collected_at=collected_at,
@@ -246,7 +248,8 @@ def fetch_shop_blog(limit: int = 160) -> list[GoldExample]:
                     ezafe=None,
                     verified=False,
                     strata=tuple(strata),
-                    source=kind,
+                    source=canonical_domain(url) or kind,
+                    source_kind=kind,
                     source_url=url,
                     license="source-site-terms (snippet for evaluation only)",
                     collected_at=collected_at,
@@ -281,7 +284,10 @@ def select_corpus(
     web_count = 0
 
     def is_wiki(ex: GoldExample) -> bool:
-        return ex.source == "fa.wikipedia"
+        return ex.source_kind == "wikipedia" or ex.source in {
+            "fa.wikipedia",
+            "fa.wikipedia.org",
+        }
 
     # First take strata-selected, respecting caps.
     for ex in strata_selected:
